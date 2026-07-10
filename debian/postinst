@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+if ! id picam-orchestrator >/dev/null 2>&1; then
+    useradd -r -s /usr/sbin/nologin picam-orchestrator || true
+fi
+
+systemctl daemon-reload || true
+
+echo ""
+echo "picam-orchestrator (Go) installed."
+echo "  Edit config  : /etc/picam-orchestrator/config.ini"
+echo "  Enable       : systemctl enable --now picam-orchestrator"
+echo "  WHEP offer   : POST http://<pi-ip>:81/webrtc/offer?stream=main (or lores)"
+echo "  Status URL   : http://<pi-ip>:81/status.json"
+echo "  Plain status : echo status | nc <pi-ip> 8091"
+echo ""
+echo "  This is a headless backend with no web UI. Install picam-frontend"
+echo "  on one machine to get a browser interface for one or more of these."

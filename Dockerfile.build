@@ -1,0 +1,67 @@
+# Builds the picam-orchestrator Debian package for arm64 (Raspberry Pi).
+#
+# Runs debhelper/dpkg-buildpackage inside a real Debian arm64 environment
+# rather than cross-compiling on the host, so the cgo build against
+# libvpx links against genuine arm64 libvpx headers/libs — no cross
+# sysroot to maintain. On an Apple Silicon host this container runs
+# natively (no QEMU emulation); on an x86_64 host, add
+# `docker run --privileged --rm tonistiigi/binfmt --install arm64` once
+# first to register arm64 emulation.
+#
+# Usage (from this directory):
+#   docker build --platform linux/arm64 -f Dockerfile.build -t picam-orchestrator-builder .
+#   docker create --name picam-orchestrator-extract picam-orchestrator-builder
+#   docker cp picam-orchestrator-extract:/out ./dist
+#   docker rm picam-orchestrator-extract
+#
+# The resulting .deb (and .changes/.buildinfo) land in ./dist, versioned as
+# <checked-in-version>+<UTC build timestamp>, e.g.
+# picam-orchestrator_1.0.0+20260709.144501_arm64.deb — a Debian-standard
+# "local version" suffix (Policy §5.6.12: a '+' after the upstream version
+# sorts higher than the bare version, marking this as newer than a plain
+# 1.0.0 but not a real point release). This only rewrites debian/changelog
+# inside the container's own copy of the source (see the COPY below) — the
+# checked-in changelog on the host is never touched, so every build gets a
+# fresh, unique timestamp stamped on top of whatever version is currently
+# checked in.
+
+FROM golang:1.26-bookworm AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        debhelper \
+        devscripts \
+        pkg-config \
+        libvpx-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# Separate layer for module downloads so editing source doesn't bust the
+# module cache on rebuild.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Stamp a build-time version (base version + UTC date/time as a Debian
+# local-version suffix) before building, so every build produces a
+# uniquely versioned, uniquely named .deb — dpkg-buildpackage derives
+# both the "Version" control field and the output filename from this
+# changelog entry, so nothing downstream needs to know about the
+# timestamp separately.
+#
+# debian/rules already pins GOCACHE under the build tree and sets
+# CGO_ENABLED=1; -d (on dpkg-buildpackage) skips dpkg-checkbuilddeps'
+# check for the golang-go *package* specifically, since we supply Go via
+# this base image instead.
+RUN set -e; \
+    BASEVER="$(dpkg-parsechangelog -S Version)"; \
+    TS="$(date -u +%Y%m%d.%H%M%S)"; \
+    DEBEMAIL="jhanekom@gmail.com" DEBFULLNAME="Jaco Hanekom" \
+        dch --newversion "${BASEVER}+${TS}" --distribution stable --force-distribution \
+        "Automated snapshot build (UTC ${TS})."; \
+    dpkg-buildpackage -us -uc -b -d
+
+# Build artifacts land one directory above the source tree by default
+# for "3.0 (native)" format source packages.
+RUN mkdir -p /out && cp /*.deb /*.changes /*.buildinfo /out/ 2>/dev/null || cp /*.deb /out/

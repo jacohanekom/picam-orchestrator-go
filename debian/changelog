@@ -1,0 +1,20 @@
+picam-orchestrator (1.0.0) stable; urgency=medium
+
+  * Initial Go reimplementation of picam-orchestrator, replacing the
+    C++/libdatachannel/libvpx/libjpeg build with a Go module using
+    pion/webrtc (pure-Go WebRTC, no vendored libdatachannel/OpenSSL
+    build step) and a cgo binding to the system libvpx for VP8
+    encoding. Same wire protocols (UDP frame chunking, detection/
+    telemetry JSON streams, picam-raw/picam-recorder TCP control
+    protocols), same config.ini format and defaults, and the same
+    HTTP/TCP endpoint surface (POST /webrtc/offer, /status.json,
+    /osd, /annotate, /camera, plain-text status protocol) as the
+    original C++ implementation.
+  * Verified end-to-end against synthetic picam-raw/picam-hailo/
+    picam-recorder stand-ins: UDP frame reassembly, detection
+    matching, EventRecorder start/snapshot/stop and .events.json
+    output, every HTTP control endpoint, the plain-text status
+    protocol, and a real WHEP handshake (via a pion test client)
+    that received live VP8 RTP packets end-to-end.
+
+ -- Jaco Hanekom <jhanekom@gmail.com>  Tue, 07 Jul 2026 10:00:00 +0000

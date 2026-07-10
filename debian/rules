@@ -1,0 +1,69 @@
+#!/usr/bin/make -f
+
+# Keep Go's build cache inside the package build tree rather than
+# touching $HOME (which may not exist/be writable in a clean build
+# chroot), and avoid any module-proxy network access during a Debian
+# build — go.sum already pins every dependency.
+export GOCACHE := $(CURDIR)/debian/.gocache
+export GOFLAGS := -mod=mod
+export GO111MODULE := on
+export CGO_ENABLED := 1
+
+DEB_BUILD_ARCH      := $(shell dpkg-architecture -qDEB_BUILD_ARCH)
+DEB_HOST_ARCH       := $(shell dpkg-architecture -qDEB_HOST_ARCH)
+DEB_HOST_GNU_TYPE   := $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
+DEB_HOST_MULTIARCH  := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+CROSS_COMPILING     := $(filter-out $(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))
+
+ifneq ($(CROSS_COMPILING),)
+# Cross-compiling (e.g. building for arm64 on an amd64 host, invoked via
+# `dpkg-buildpackage -aarm64`): point Go/cgo at the target's cross
+# toolchain and the multiarch libvpx-dev:$(DEB_HOST_ARCH) install,
+# following Debian's standard cross-building convention
+# (https://wiki.debian.org/CrossCompiling) — PKG_CONFIG_LIBDIR redirects
+# pkg-config at the target arch's .pc files instead of the build host's
+# own, with PKG_CONFIG_PATH cleared so it can't fall back to those.
+export GOOS   := linux
+export GOARCH := $(subst aarch64,arm64,$(shell dpkg-architecture -qDEB_HOST_GNU_CPU))
+export CC     := $(DEB_HOST_GNU_TYPE)-gcc
+export PKG_CONFIG_LIBDIR := /usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig
+export PKG_CONFIG_PATH :=
+endif
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	go build -trimpath -o picam-orchestrator ./cmd/picam-orchestrator
+
+override_dh_auto_test:
+ifeq ($(CROSS_COMPILING),)
+	go vet ./...
+	go test ./internal/vp8/...
+else
+	# go vet only compiles (via the cross CC above), never executes the
+	# target binary, so it's safe to keep even cross-compiling. go test
+	# is skipped: it needs to actually RUN the compiled test binary,
+	# which this $(DEB_BUILD_ARCH) build host can't do for a
+	# $(DEB_HOST_ARCH) binary without emulation.
+	go vet ./...
+endif
+
+override_dh_auto_install:
+	install -D -m 0755 picam-orchestrator debian/picam-orchestrator/usr/bin/picam-orchestrator
+	install -D -m 0644 config.ini debian/picam-orchestrator/etc/picam-orchestrator/config.ini
+
+override_dh_installsystemd:
+	dh_installsystemd --no-restart-on-upgrade --no-stop-on-upgrade
+
+override_dh_dwz:
+	# dwz deduplicates DWARF debug info across multiple binaries in a
+	# package; this package ships exactly one, and dwz doesn't
+	# understand the DWARF layout Go's own linker produces anyway
+	# (fails with "Found compressed .debug_aranges section, not
+	# attempting dwz compression"). Skip it rather than work around it.
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -f picam-orchestrator
+	rm -rf debian/.gocache
