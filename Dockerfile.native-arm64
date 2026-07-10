@@ -1,15 +1,20 @@
-# Builds the picam-orchestrator Debian package for arm64 (Raspberry Pi).
+# Builds the picam-orchestrator Debian package NATIVELY for arm64, using
+# a real arm64 Docker daemon (e.g. colima on Apple Silicon, which runs a
+# genuine arm64 Linux VM — no QEMU emulation involved despite the host
+# being a Mac). Same approach as the sibling picam-raw/picam-hailo
+# projects' Dockerfile.native-arm64 — see those files' headers for why
+# native beats cross-compiling here in general (avoids apt ever having
+# to mix two architectures' packages at once, which is what actually
+# blocked picam-raw's cross-build attempt).
 #
-# Runs debhelper/dpkg-buildpackage inside a real Debian arm64 environment
-# rather than cross-compiling on the host, so the cgo build against
-# libvpx links against genuine arm64 libvpx headers/libs — no cross
-# sysroot to maintain. On an Apple Silicon host this container runs
-# natively (no QEMU emulation); on an x86_64 host, add
-# `docker run --privileged --rm tonistiigi/binfmt --install arm64` once
-# first to register arm64 emulation.
+# For picam-orchestrator specifically, native also means the cgo build
+# against libvpx links against genuine native arm64 libvpx headers/libs —
+# no cross sysroot, no PKG_CONFIG_LIBDIR redirection, none of the
+# machinery Dockerfile.cross-arm64 (kept alongside this file) needs to
+# cross-compile from an amd64 host instead.
 #
-# Usage (from this directory):
-#   docker build --platform linux/arm64 -f Dockerfile.build -t picam-orchestrator-builder .
+# Usage (from this directory, on a genuinely arm64 Docker host):
+#   docker build --platform linux/arm64 -f Dockerfile.native-arm64 -t picam-orchestrator-builder .
 #   docker create --name picam-orchestrator-extract picam-orchestrator-builder
 #   docker cp picam-orchestrator-extract:/out ./dist
 #   docker rm picam-orchestrator-extract
