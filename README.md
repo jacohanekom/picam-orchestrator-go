@@ -43,6 +43,28 @@ systemctl enable --now picam-orchestrator
 
 The package creates a `picam-orchestrator` system user, installs the systemd unit, and deploys a default `config.ini` to `/etc/picam-orchestrator/`.
 
+### From the APT repository
+
+CI publishes to a signed APT repository (shared with other aipicam Raspberry Pi packages) hosted on Cloudflare R2, with two channels:
+
+- **`main`** — pushing a `v*` tag publishes the clean release version here.
+- **`nightly`** — every push (to any branch, and PRs) publishes a dev build here, versioned with a `+<UTC timestamp>` suffix.
+
+```bash
+curl -fsSL https://repo.aipicam.com/pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/aipicam.gpg
+
+# stable releases
+echo "deb [signed-by=/usr/share/keyrings/aipicam.gpg] https://repo.aipicam.com main main" | sudo tee /etc/apt/sources.list.d/aipicam.list
+
+# or nightly builds instead
+echo "deb [signed-by=/usr/share/keyrings/aipicam.gpg] https://repo.aipicam.com nightly main" | sudo tee /etc/apt/sources.list.d/aipicam.list
+
+sudo apt-get update
+sudo apt-get install picam-orchestrator
+```
+
+Builds run on GitHub's native `ubuntu-24.04-arm` hosted runner (no QEMU) so the cgo build against libvpx links against genuine native arm64 headers/libs. Uses the same `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `GPG_PRIVATE_KEY`, and `GPG_KEY_ID` repo secrets described in [pi-block-cpu-cores](../pi-block-cpu-cores)'s README, since it publishes into the same shared repo.
+
 ## Usage
 
 ```bash
