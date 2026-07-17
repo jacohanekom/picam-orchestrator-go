@@ -78,7 +78,8 @@ jobs:
               set -e
               apt-get update
               apt-get install -y --no-install-recommends \
-                debhelper pkg-config libvpx-dev
+                debhelper pkg-config libvpx-dev git
+              git config --global --add safe.directory "*"
               dpkg-buildpackage -us -uc -b -d
             '
 
