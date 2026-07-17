@@ -1,6 +1,7 @@
 package webrtcsrv
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,7 @@ type Client struct {
 	// on-screen corruption rather than a one-frame glitch.
 	droppedFrames  atomic.Uint64
 	lastDropLogged atomic.Int64 // UnixNano; 0 = never logged
+	lastKfForced   atomic.Int64 // UnixNano of last PLI-honored keyframe; rate-limits PLI storms
 
 	// sendCh + writePump decouple Broadcast (the hot, single-goroutine
 	// encode-loop path) from pion's WriteSample, which performs a
@@ -84,7 +86,20 @@ func (c *Client) writePump() {
 // remote peer and requests a forced keyframe in response. It exits on
 // its own once the sender/PeerConnection is closed (ReadRTCP then
 // returns an error).
+//
+// PLIs are rate-limited to at most one honored keyframe per pliMinInterval.
+// Without this, a large main-stream keyframe that loses even one RTP
+// packet in transit makes the browser send a PLI, which forces another
+// (equally large, equally loss-prone) keyframe, which the encoder is now
+// spending all its time producing back-to-back — starving delta frames,
+// deepening the send-queue backlog, and losing packets again. That is a
+// stable non-recovering equilibrium the browser can't escape, and it
+// only bites the main stream because only its keyframes are big enough to
+// routinely lose a packet. Ignoring redundant PLIs lets the encoder keep
+// producing normal frames between keyframe attempts.
 func (c *Client) readRTCP() {
+	const pliMinInterval = 2 * time.Second
+	var pliSuppressed uint64
 	for {
 		pkts, _, err := c.sender.ReadRTCP()
 		if err != nil {
@@ -92,7 +107,18 @@ func (c *Client) readRTCP() {
 		}
 		for _, p := range pkts {
 			if _, ok := p.(*rtcp.PictureLossIndication); ok {
-				c.forceKeyframe.Store(true)
+				now := time.Now().UnixNano()
+				last := c.lastKfForced.Load()
+				if now-last >= int64(pliMinInterval) && c.lastKfForced.CompareAndSwap(last, now) {
+					c.forceKeyframe.Store(true)
+					if pliSuppressed > 0 {
+						log.Printf("[WebRTC] %s client: forced keyframe on PLI (%d redundant PLIs suppressed since last)",
+							c.stream, pliSuppressed)
+						pliSuppressed = 0
+					}
+				} else {
+					pliSuppressed++
+				}
 			}
 		}
 	}
