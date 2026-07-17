@@ -64,6 +64,12 @@ type Config struct {
 	// encoder is already corrupt or whether the corruption is introduced
 	// downstream in encode/transport. nil disables the endpoint.
 	DebugFrameJPEG func(stream StreamSource) ([]byte, bool)
+
+	// DebugFrameRaw, if set, returns the current raw I420 frame bytes for
+	// the given stream plus its width/height, straight from the mailbox
+	// with no re-encode at all — for GET /debug/frame.raw. Lets exact
+	// bytes be pulled off a headless box for offline analysis.
+	DebugFrameRaw func(stream StreamSource) (data []byte, w, h int, ok bool)
 }
 
 // Server serves WHEP signaling plus the plain control/status endpoints,

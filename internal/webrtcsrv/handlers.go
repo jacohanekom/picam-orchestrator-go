@@ -18,6 +18,7 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /camera", s.handleCamera)
 	mux.HandleFunc("GET /status.json", s.handleStatusJSON)
 	mux.HandleFunc("GET /debug/frame.jpg", s.handleDebugFrame)
+	mux.HandleFunc("GET /debug/frame.raw", s.handleDebugFrameRaw)
 	mux.HandleFunc("/", handleNotFound)
 }
 
@@ -40,6 +41,35 @@ func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(jpg)
+}
+
+// handleDebugFrameRaw implements GET /debug/frame.raw?stream=main|lores.
+// It returns the current mailbox frame's raw I420 bytes with no re-encode,
+// plus diagnostic headers reporting the frame's width/height, actual data
+// length, and the length expected for those dimensions. A mismatch
+// between actual and expected length (visible with `curl -sI`) points
+// straight at a reassembly/size bug; matching lengths with corrupt bytes
+// points at a packing/plane bug to be found in the dumped bytes.
+func (s *Server) handleDebugFrameRaw(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.DebugFrameRaw == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug raw endpoint disabled"})
+		return
+	}
+	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
+	data, fw, fh, ok := s.cfg.DebugFrameRaw(stream)
+	if !ok || len(data) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
+		return
+	}
+	expected := fw * fh * 3 / 2
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Width", strconv.Itoa(fw))
+	w.Header().Set("X-Frame-Height", strconv.Itoa(fh))
+	w.Header().Set("X-Frame-Datalen", strconv.Itoa(len(data)))
+	w.Header().Set("X-Frame-Expectedlen", strconv.Itoa(expected))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

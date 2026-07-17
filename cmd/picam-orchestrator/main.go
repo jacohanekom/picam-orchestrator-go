@@ -74,6 +74,17 @@ func main() {
 		}
 		return jpg, true
 	}
+	debugFrameRaw := func(stream webrtcsrv.StreamSource) ([]byte, int, int, bool) {
+		mb := &mainMailbox
+		if stream == webrtcsrv.StreamLores {
+			mb = &loresMailbox
+		}
+		frame, ok := mb.Get()
+		if !ok || len(frame.Data) == 0 {
+			return nil, 0, 0, false
+		}
+		return frame.Data, frame.Width, frame.Height, true
+	}
 
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
 		HTTPPort:        cfg.HTTPPort,
@@ -84,6 +95,7 @@ func main() {
 		PicamRawCmdPort: cfg.CommandPort,
 		MaxClients:      50,
 		DebugFrameJPEG:  debugFrameJPEG,
+		DebugFrameRaw:   debugFrameRaw,
 	}, status, telState)
 	if err != nil {
 		log.Fatalf("[WebRTC] %v", err)
