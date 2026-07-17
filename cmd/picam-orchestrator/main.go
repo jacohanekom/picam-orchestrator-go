@@ -55,6 +55,26 @@ func main() {
 	mainDelayBuf := delaybuffer.New(cfg.DelayMs)
 	loresDelayBuf := delaybuffer.New(cfg.DelayMs)
 
+	// Diagnostic: JPEG-encode the current live frame for a stream straight
+	// from its mailbox, bypassing VP8/WebRTC. curl GET /debug/frame.jpg
+	// on a headless box to check whether the frame feeding the encoder is
+	// already corrupt or whether corruption is introduced downstream.
+	debugFrameJPEG := func(stream webrtcsrv.StreamSource) ([]byte, bool) {
+		mb := &mainMailbox
+		if stream == webrtcsrv.StreamLores {
+			mb = &loresMailbox
+		}
+		frame, ok := mb.Get()
+		if !ok || len(frame.Data) == 0 {
+			return nil, false
+		}
+		jpg, err := snapshot.Encode(frame.Data, frame.Width, frame.Height, cfg.JPEGQuality)
+		if err != nil {
+			return nil, false
+		}
+		return jpg, true
+	}
+
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
 		HTTPPort:        cfg.HTTPPort,
 		DefaultStream:   webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMain),
@@ -63,6 +83,7 @@ func main() {
 		PicamRawHost:    cfg.TelemetryHost,
 		PicamRawCmdPort: cfg.CommandPort,
 		MaxClients:      50,
+		DebugFrameJPEG:  debugFrameJPEG,
 	}, status, telState)
 	if err != nil {
 		log.Fatalf("[WebRTC] %v", err)

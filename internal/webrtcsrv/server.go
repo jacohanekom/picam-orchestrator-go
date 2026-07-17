@@ -56,6 +56,14 @@ type Config struct {
 	PicamRawHost           string
 	PicamRawCmdPort        int
 	MaxClients             int
+
+	// DebugFrameJPEG, if set, JPEG-encodes the current frame for the
+	// given stream straight from its live mailbox — bypassing VP8 and
+	// WebRTC entirely — for the GET /debug/frame.jpg diagnostic. Lets a
+	// headless box confirm (via curl) whether the frame feeding the VP8
+	// encoder is already corrupt or whether the corruption is introduced
+	// downstream in encode/transport. nil disables the endpoint.
+	DebugFrameJPEG func(stream StreamSource) ([]byte, bool)
 }
 
 // Server serves WHEP signaling plus the plain control/status endpoints,

@@ -17,7 +17,29 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /annotate", s.handleAnnotate)
 	mux.HandleFunc("GET /camera", s.handleCamera)
 	mux.HandleFunc("GET /status.json", s.handleStatusJSON)
+	mux.HandleFunc("GET /debug/frame.jpg", s.handleDebugFrame)
 	mux.HandleFunc("/", handleNotFound)
+}
+
+// handleDebugFrame implements GET /debug/frame.jpg?stream=main|lores. It
+// JPEG-encodes the current live frame directly from the mailbox,
+// bypassing VP8/WebRTC, so a headless box can `curl` it to see whether
+// the frame feeding the encoder is already corrupt.
+func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.DebugFrameJPEG == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug frame endpoint disabled"})
+		return
+	}
+	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
+	jpg, ok := s.cfg.DebugFrameJPEG(stream)
+	if !ok || len(jpg) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(jpg)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
