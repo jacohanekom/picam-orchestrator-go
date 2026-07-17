@@ -43,7 +43,11 @@ type Client struct {
 	// synchronous OS write once the connection is up (unlike
 	// libdatachannel, pion does not dispatch to its own internal I/O
 	// goroutines) — without this, one slow/stuck client could stall
-	// delivery to the encoder or every other client.
+	// delivery to the encoder or every other client. Sized to 8 (was 4)
+	// to absorb a transient encode-time spike on the CPU-heavy main
+	// stream without dropping — still small enough that a genuinely
+	// stuck client fills it and starts dropping within one second at
+	// typical live FPS, so this doesn't mask a truly wedged client.
 	sendCh   chan sampleJob
 	done     chan struct{}
 	doneOnce sync.Once
@@ -55,7 +59,7 @@ func newClient(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticSample, 
 		track:  track,
 		sender: sender,
 		stream: stream,
-		sendCh: make(chan sampleJob, 4),
+		sendCh: make(chan sampleJob, 8),
 		done:   make(chan struct{}),
 	}
 	c.alive.Store(true)

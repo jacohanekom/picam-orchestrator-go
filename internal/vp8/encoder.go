@@ -76,7 +76,17 @@ func NewEncoder(width, height, bitrateKbps, fps int) (*Encoder, error) {
 	cfg.g_error_resilient = C.VPX_ERROR_RESILIENT_DEFAULT
 	cfg.rc_resize_allowed = 0
 	cfg.kf_mode = C.VPX_KF_AUTO
-	cfg.kf_max_dist = 999999 // effectively disables periodic keyframes; forced explicitly instead
+	// Bounded rather than disabled: under real-time CPU pressure (main's
+	// frames are ~13x lores's pixel count) the encode loop can fall
+	// behind and the WebRTC send queue drops a frame (see
+	// webrtcsrv.Server.Broadcast). VP8 is predictive with no
+	// error-concealment for a missing reference, so one dropped delta
+	// frame corrupts every subsequent frame until a keyframe arrives —
+	// with keyframes previously forced-only (new client / PLI feedback),
+	// a stream could stay corrupted indefinitely instead of a decoder
+	// recovering on its own. A periodic keyframe every ~3s bounds how
+	// long any single dropped frame can stay visible as corruption.
+	cfg.kf_max_dist = C.uint(3 * fps)
 
 	e := &Encoder{width: width, height: height}
 	if rc := C.vp8_enc_init(&e.ctx, &cfg); rc != C.VPX_CODEC_OK {
