@@ -182,6 +182,13 @@ func (s *Server) Broadcast(stream StreamSource, vp8 []byte, dur time.Duration) {
 		select {
 		case c.sendCh <- sampleJob{data: vp8, dur: dur}:
 		default:
+			total := c.droppedFrames.Add(1)
+			now := time.Now().UnixNano()
+			last := c.lastDropLogged.Load()
+			if now-last > int64(time.Second) && c.lastDropLogged.CompareAndSwap(last, now) {
+				log.Printf("[WebRTC] %s client send queue full — dropped frame (total dropped: %d); "+
+					"this breaks VP8's prediction chain until the next keyframe", stream, total)
+			}
 		}
 	}
 }

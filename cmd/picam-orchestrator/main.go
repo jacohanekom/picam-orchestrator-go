@@ -259,7 +259,13 @@ func runMainLoop(
 						cfg.CameraLabel(int(frame.CameraIndex)), srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
 				forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMain)
-				if vp8Bytes, err := mainEncoder.Encode(data, frame.TimestampUs, forceKf); err != nil {
+				encStart := time.Now()
+				vp8Bytes, err := mainEncoder.Encode(data, frame.TimestampUs, forceKf)
+				if encDur := time.Since(encStart); encDur.Microseconds() > mainInterval {
+					log.Printf("[VP8] main encode took %v, longer than the %v tick interval — "+
+						"falling behind real time", encDur, time.Duration(mainInterval)*time.Microsecond)
+				}
+				if err != nil {
 					log.Printf("[VP8] main encode error: %v", err)
 				} else if len(vp8Bytes) > 0 {
 					srv.Broadcast(webrtcsrv.StreamMain, vp8Bytes, now.Sub(lastMain))

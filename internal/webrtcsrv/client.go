@@ -28,6 +28,16 @@ type Client struct {
 	alive         atomic.Bool
 	forceKeyframe atomic.Bool
 
+	// Diagnostics for a dropped-frame theory: if the encode loop outruns
+	// this client's consumption (e.g. main's ~13x larger frames vs.
+	// lores under real-time CPU pressure), Broadcast silently drops
+	// samples rather than blocking. VP8 is predictive, so a dropped
+	// delta frame breaks every subsequent frame's reference chain until
+	// the next keyframe — which would look exactly like sustained
+	// on-screen corruption rather than a one-frame glitch.
+	droppedFrames  atomic.Uint64
+	lastDropLogged atomic.Int64 // UnixNano; 0 = never logged
+
 	// sendCh + writePump decouple Broadcast (the hot, single-goroutine
 	// encode-loop path) from pion's WriteSample, which performs a
 	// synchronous OS write once the connection is up (unlike
