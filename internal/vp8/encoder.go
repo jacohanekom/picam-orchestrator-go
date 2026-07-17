@@ -55,8 +55,10 @@ type Encoder struct {
 
 // NewEncoder configures and initializes a realtime CBR VP8 encoder at
 // width x height, targeting bitrateKbps kilobits/sec; fps only seeds the
-// VP8 timebase denominator (it does not change at runtime).
-func NewEncoder(width, height, bitrateKbps, fps int) (*Encoder, error) {
+// VP8 timebase denominator (it does not change at runtime). cpuUsed is
+// the VP8E_SET_CPUUSED realtime speed (higher = faster encode, lower
+// quality; roughly 4-16 for VP8 realtime).
+func NewEncoder(width, height, bitrateKbps, fps, cpuUsed int) (*Encoder, error) {
 	var cfg C.vpx_codec_enc_cfg_t
 	if rc := C.vpx_codec_enc_config_default(C.vpx_codec_vp8_cx(), &cfg, 0); rc != C.VPX_CODEC_OK {
 		return nil, fmt.Errorf("vp8: enc_config_default failed: %d", rc)
@@ -92,7 +94,7 @@ func NewEncoder(width, height, bitrateKbps, fps int) (*Encoder, error) {
 	if rc := C.vp8_enc_init(&e.ctx, &cfg); rc != C.VPX_CODEC_OK {
 		return nil, fmt.Errorf("vp8: enc_init failed: %d", rc)
 	}
-	if rc := C.vp8_set_cpuused(&e.ctx, 8); rc != C.VPX_CODEC_OK {
+	if rc := C.vp8_set_cpuused(&e.ctx, C.int(cpuUsed)); rc != C.VPX_CODEC_OK {
 		C.vpx_codec_destroy(&e.ctx)
 		return nil, fmt.Errorf("vp8: VP8E_SET_CPUUSED failed: %d", rc)
 	}

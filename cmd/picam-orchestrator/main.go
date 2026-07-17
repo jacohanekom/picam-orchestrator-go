@@ -117,12 +117,12 @@ func main() {
 		loresDelayBuf.Push(f)
 	})
 
-	mainEncoder, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainKbps, cfg.OutputFPSLive)
+	mainEncoder, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
 	if err != nil {
 		log.Fatalf("[VP8] main encoder: %v", err)
 	}
 	defer mainEncoder.Close()
-	loresEncoder, err := vp8.NewEncoder(cfg.LoresWidth, cfg.LoresHeight, cfg.VP8BitrateLoresKbps, cfg.OutputFPSLive)
+	loresEncoder, err := vp8.NewEncoder(cfg.LoresWidth, cfg.LoresHeight, cfg.VP8BitrateLoresKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedLores)
 	if err != nil {
 		log.Fatalf("[VP8] lores encoder: %v", err)
 	}

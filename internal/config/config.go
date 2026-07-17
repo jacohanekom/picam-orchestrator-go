@@ -145,6 +145,8 @@ type Config struct {
 	// [encode]
 	VP8BitrateMainKbps  int
 	VP8BitrateLoresKbps int
+	VP8CPUUsedMain      int
+	VP8CPUUsedLores     int
 	JPEGQuality         int
 	OutputFPSLive       int
 	OutputFPSAnnotated  int
@@ -215,7 +217,14 @@ func Load(path string) (*Config, error) {
 
 		VP8BitrateMainKbps:  r.int("encode.vp8_bitrate_main_kbps", 2000),
 		VP8BitrateLoresKbps: r.int("encode.vp8_bitrate_lores_kbps", 500),
-		JPEGQuality:         r.int("encode.jpeg_quality", 80),
+		// VP8 realtime speed (VP8E_SET_CPUUSED): higher = faster encode,
+		// lower quality. Main (full-res, ~13x lores's pixels) defaults
+		// faster so its encode keeps up with real time on the Pi; lores
+		// has ample headroom and stays at the original 8. Valid range for
+		// VP8 realtime is roughly 4-16.
+		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 12),
+		VP8CPUUsedLores: r.int("encode.vp8_cpu_used_lores", 8),
+		JPEGQuality:     r.int("encode.jpeg_quality", 80),
 		OutputFPSLive:       r.int("encode.output_fps_live", 15),
 		OutputFPSAnnotated:  r.int("encode.output_fps_annotated", 30),
 

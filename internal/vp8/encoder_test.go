@@ -4,7 +4,7 @@ import "testing"
 
 func TestEncodeKeyframe(t *testing.T) {
 	const w, h = 64, 48
-	enc, err := NewEncoder(w, h, 500, 15)
+	enc, err := NewEncoder(w, h, 500, 15, 8)
 	if err != nil {
 		t.Fatalf("NewEncoder: %v", err)
 	}
