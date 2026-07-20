@@ -24,7 +24,7 @@ func drawString(y []byte, w, h, px, py int, text string) {
 }
 
 // DrawOSD burns "cam: <cameraLabel>" bottom-left (if showCameraID) and a
-// UTC "YYYY-MM-DD HH:MM:SS" timestamp derived from timestampUs
+// local-time "YYYY-MM-DD HH:MM:SS" timestamp derived from timestampUs
 // bottom-right (if showTime) into the Y-plane y. No-op if both flags are
 // false.
 func DrawOSD(y []byte, w, h int, timestampUs int64, cameraLabel string, showCameraID, showTime bool) {
@@ -43,7 +43,11 @@ func DrawOSD(y []byte, w, h int, timestampUs int64, cameraLabel string, showCame
 
 	if showTime {
 		sec := timestampUs / 1_000_000
-		text := time.Unix(sec, 0).UTC().Format("2006-01-02 15:04:05")
+		// Local, not UTC: matches the frontend's separate status-panel
+		// clock, which renders via the browser's toLocaleTimeString()
+		// (local time) — these two previously disagreed by the system's
+		// UTC offset.
+		text := time.Unix(sec, 0).Local().Format("2006-01-02 15:04:05")
 		tw := textWidth(text)
 		x := w - tw - osdPad
 		drawBg(y, w, h, x-2, bottomY-2, tw+4, th+4)
