@@ -167,6 +167,15 @@ type Config struct {
 	LoresHeight int
 	PingEvery   int
 
+	// MainDisplayMaxWidth/Height cap the resolution the main stream is
+	// actually encoded/displayed at over WebRTC — independent of
+	// MainWidth/MainHeight, which is the camera's native capture
+	// resolution (used unchanged for recording and snapshots). The
+	// frame is downscaled (preserving aspect ratio, never upscaled) to
+	// fit within this box before VP8 encoding. 0 means no cap.
+	MainDisplayMaxWidth  int
+	MainDisplayMaxHeight int
+
 	// [detections]
 	DetectionsHost string
 	DetectionsPort int
@@ -243,6 +252,9 @@ func Load(path string) (*Config, error) {
 		LoresWidth:  r.int("input.lores_width", 640),
 		LoresHeight: r.int("input.lores_height", 360),
 		PingEvery:   r.int("input.ping_every", 5),
+
+		MainDisplayMaxWidth:  r.int("encode.main_display_max_width", 1920),
+		MainDisplayMaxHeight: r.int("encode.main_display_max_height", 1080),
 
 		DetectionsHost: r.str("detections.host", "127.0.0.1"),
 		DetectionsPort: r.int("detections.port", 8558),

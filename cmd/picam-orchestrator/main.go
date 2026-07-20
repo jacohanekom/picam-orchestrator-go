@@ -22,6 +22,7 @@ import (
 	"picam-orchestrator/internal/config"
 	"picam-orchestrator/internal/delaybuffer"
 	"picam-orchestrator/internal/detect"
+	"picam-orchestrator/internal/imgscale"
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/rawframe"
 	"picam-orchestrator/internal/recorder"
@@ -150,7 +151,20 @@ func main() {
 		loresDelayBuf.Push(f)
 	})
 
-	mainEncoder, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
+	// The live web-displayed main stream is capped below the camera's
+	// native capture resolution (which stays full-res for recording and
+	// snapshots — see snapshotFn/debugFrameJPEG/debugFrameRaw above,
+	// none of which use this) — the encoder is sized for the capped
+	// resolution, and each frame is downscaled to match before encoding
+	// (see runMainLoop).
+	mainEncodeWidth, mainEncodeHeight := imgscale.FitWithinMax(
+		cfg.MainWidth, cfg.MainHeight, cfg.MainDisplayMaxWidth, cfg.MainDisplayMaxHeight)
+	if mainEncodeWidth != cfg.MainWidth || mainEncodeHeight != cfg.MainHeight {
+		log.Printf("[Main] capturing %dx%d, web display capped to %dx%d",
+			cfg.MainWidth, cfg.MainHeight, mainEncodeWidth, mainEncodeHeight)
+	}
+
+	mainEncoder, err := vp8.NewEncoder(mainEncodeWidth, mainEncodeHeight, cfg.VP8BitrateMainKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
 	if err != nil {
 		log.Fatalf("[VP8] main encoder: %v", err)
 	}
@@ -199,7 +213,8 @@ func main() {
 	}
 	log.Printf("[Main] Streams active. Open http://<pi-ip>:%d", cfg.HTTPPort)
 
-	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf, mainEncoder, loresEncoder)
+	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf,
+		mainEncoder, loresEncoder, mainEncodeWidth, mainEncodeHeight)
 
 	log.Printf("[Main] Shutting down.")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -213,6 +228,8 @@ func main() {
 func logConfig(cfg *config.Config) {
 	log.Printf("[Config] input       : %s main=%dx%d:%d lores=%dx%d:%d ping_every=%ds",
 		cfg.InputHost, cfg.MainWidth, cfg.MainHeight, cfg.MainPort, cfg.LoresWidth, cfg.LoresHeight, cfg.LoresPort, cfg.PingEvery)
+	log.Printf("[Config] main display: capped to %dx%d (0 = no cap; capture/recording/snapshots stay native)",
+		cfg.MainDisplayMaxWidth, cfg.MainDisplayMaxHeight)
 	log.Printf("[Config] detections  : %s:%d tolerance_ms=%d", cfg.DetectionsHost, cfg.DetectionsPort, cfg.ToleranceMs)
 	log.Printf("[Config] telemetry   : %s:%d command_port=%d", cfg.TelemetryHost, cfg.TelemetryPort, cfg.CommandPort)
 	log.Printf("[Config] delay       : %dms (applied to whichever resolution has annotation on)", cfg.DelayMs)
@@ -241,6 +258,7 @@ func runMainLoop(
 	mainMailbox, loresMailbox *rawframe.Mailbox,
 	mainDelayBuf, loresDelayBuf *delaybuffer.DelayBuffer,
 	mainEncoder, loresEncoder *vp8.Encoder,
+	mainEncodeWidth, mainEncodeHeight int,
 ) {
 	liveIntervalUs := fpsIntervalUs(cfg.OutputFPSLive)
 	annotIntervalUs := fpsIntervalUs(cfg.OutputFPSAnnotated)
@@ -281,15 +299,22 @@ func runMainLoop(
 				frame, haveFrame = mainMailbox.Get()
 			}
 			if haveFrame && len(frame.Data) > 0 {
-				data := append([]byte(nil), frame.Data...)
+				// Downscale from the camera's native capture resolution
+				// to the capped web-display resolution before drawing
+				// any overlay, so burned-in text/boxes stay crisp at the
+				// final displayed size rather than being blurred by the
+				// scale operation. Recording/snapshots never go through
+				// this path, so they keep full native resolution.
+				data := imgscale.DownscaleI420(append([]byte(nil), frame.Data...),
+					frame.Width, frame.Height, mainEncodeWidth, mainEncodeHeight)
 				if mainAnnotated {
 					if evt, ok := detBuf.FindNearest(frame.TimestampUs, toleranceUs); ok {
-						annotate.DrawDetections(data, frame.Width, frame.Height, evt.Detections)
+						annotate.DrawDetections(data, mainEncodeWidth, mainEncodeHeight, evt.Detections)
 						matchedThisTick++
 					}
 				}
 				if srv.OSDCameraID.Load() || srv.OSDTime.Load() {
-					annotate.DrawOSD(data, frame.Width, frame.Height, frame.TimestampUs,
+					annotate.DrawOSD(data, mainEncodeWidth, mainEncodeHeight, frame.TimestampUs,
 						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
 						srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
