@@ -1,29 +1,29 @@
 # picam-orchestrator (Go)
 
-A from-scratch Go reimplementation of [`picam-orchestrator`](../picam-orchestrator) — a headless WebRTC streaming backend for Raspberry Pi camera systems. Receives raw YUV420 video from `picam-raw` and object detection data from `picam-hailo`, then encodes to VP8 and streams annotated or live video over WebRTC. Same wire protocols, config file format, and HTTP/TCP endpoint surface as the original C++ implementation — see that project's README for the full protocol-level rationale; this one focuses on what's specific to the Go port.
+A Go reimplementation of [`picam-orchestrator`](../picam-orchestrator) — a headless streaming backend for Raspberry Pi camera systems. Receives raw YUV420 video from `picam-raw` and object detection data from `picam-hailo`, then encodes to MJPEG and serves annotated or live video as a plain HTTP `multipart/x-mixed-replace` stream, directly usable as an `<img src="...">` — no WebRTC signaling. Same config file format and detection/telemetry/recorder wire protocols as the original C++ implementation; the live-video transport has since diverged (see below).
 
-## Why a Go port
+## Why MJPEG-over-HTTP instead of WebRTC/VP8
 
-The original C++ implementation vendors [libdatachannel](https://github.com/paullouisageneau/libdatachannel) via CMake `FetchContent` (needs network access at configure time) and links `libssl`/`libjpeg`/`libvpx`. This port instead uses:
+This started as a WebRTC/VP8 port (same shape as the original C++ implementation). VP8 has no hardware encode path on any Raspberry Pi, and software VP8 encoding (motion estimation, inter-frame prediction) was overloading the CPU on the actual deployment hardware. JPEG has neither — every frame is encoded independently — so it's inherently far cheaper even in pure software, and dropping WebRTC's ICE/DTLS/SFU machinery in favor of one plain HTTP connection per viewer removes a large chunk of both CPU cost and code. The trade-off: no built-in adaptive bitrate/resolution switching (there's no RTCP-equivalent feedback channel to adapt from) and no sub-second WebRTC-grade latency — both judged not worth the cost on this hardware. See `internal/mjpegsrv`'s package doc for more.
 
-- **[pion/webrtc](https://github.com/pion/webrtc)** (pure Go) for WebRTC/ICE/DTLS/SRTP and VP8 RTP packetization — no vendored C++ WebRTC stack, no OpenSSL build step. pion's `SetRemoteDescription`→`AddTrack`→`CreateAnswer` flow also sidesteps a mid/m-line-matching bug the C++ version had to hand-fix.
-- **A small cgo binding directly to the system `libvpx`** (`internal/vp8`) for VP8 encoding — same realtime CBR config as the original (one-pass, no lookahead, forced-keyframes-only), since there's no mature pure-Go VP8 encoder.
-- **Go's standard `image/jpeg`** for event snapshot files — it already encodes `image.YCbCr` directly in 4:2:0 without an RGB round-trip, which is exactly what the C++ version hand-rolled raw libjpeg calls to achieve.
+This port uses:
+
+- **Go's standard `image/jpeg`** for both event snapshot files and the live MJPEG streams — it already encodes `image.YCbCr` directly in 4:2:0 without an RGB round-trip.
+- **`net/http` + `mime/multipart`** for the live stream transport (`multipart.Writer` handles the `multipart/x-mixed-replace` framing) — no external dependencies at all for this.
 - **`encoding/json`** for the detection/telemetry wire protocols, instead of a hand-rolled brace-counting scanner.
 
-Everything else — the UDP chunk-reassembly protocol, delay buffer, detection buffer, annotation/OSD pixel drawing, camera-switch/recorder TCP control protocols, and the plain-text status protocol — is a direct behavioral port.
+Everything else — the UDP chunk-reassembly protocol, delay buffer, detection buffer, annotation/OSD pixel drawing, camera-switch/recorder TCP control protocols, and the plain-text status protocol — is a direct behavioral port of the C++ original.
 
 ## Requirements
 
 **Build:**
 - Go 1.22+
-- `pkg-config` and `libvpx-dev` (or `libvpx` + headers via Homebrew on macOS) — needed for the cgo VP8 encoder
+- Nothing else — pure Go, no cgo, no system library dependencies.
 
 **Runtime:**
-- `libvpx` shared library
 - `picam-raw` (UDP streams + telemetry + command server)
 - `picam-hailo` (detection TCP stream)
-- `picam-frontend` (the only WebRTC signaling/media client this process ever talks to)
+- `picam-frontend` (typical MJPEG client, relaying the stream on to browsers — though nothing stops a browser from pointing straight at this process's stream URLs)
 - `picam-recorder` (optional — only needed for detection-triggered recording)
 
 ## Build
@@ -32,7 +32,7 @@ Everything else — the UDP chunk-reassembly protocol, delay buffer, detection b
 go build -o picam-orchestrator ./cmd/picam-orchestrator
 ```
 
-No network access is needed at build time beyond the initial `go mod download` (all dependencies are pure Go except the cgo `libvpx` binding, which links against the system library via `pkg-config`).
+No network access is needed at build time beyond the initial `go mod download`. No cgo, no system libraries to link against.
 
 ## Install (Debian package)
 
@@ -63,7 +63,7 @@ sudo apt-get update
 sudo apt-get install picam-orchestrator
 ```
 
-Builds run on GitHub's native `ubuntu-24.04-arm` hosted runner (no QEMU) so the cgo build against libvpx links against genuine native arm64 headers/libs. Uses the same `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `GPG_PRIVATE_KEY`, and `GPG_KEY_ID` repo secrets described in [pi-block-cpu-cores](../pi-block-cpu-cores)'s README, since it publishes into the same shared repo.
+Builds run on GitHub's native `ubuntu-24.04-arm` hosted runner (no QEMU) so `go test` can actually execute the compiled arm64 test binaries. Uses the same `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `GPG_PRIVATE_KEY`, and `GPG_KEY_ID` repo secrets described in [pi-block-cpu-cores](../pi-block-cpu-cores)'s README, since it publishes into the same shared repo.
 
 ## Usage
 
@@ -75,7 +75,7 @@ Builds run on GitHub's native `ubuntu-24.04-arm` hosted runner (no QEMU) so the 
 |------|---------|-------------|
 | `--config`, `-c` | `config.ini` | Path to configuration file |
 
-The HTTP control server is available at `http://<pi-ip>:81` once the upstream services are running (see `POST /webrtc/offer` below — this process never serves a browser-facing page itself).
+The HTTP server is available at `http://<pi-ip>:81` once the upstream services are running (see `/stream/*.mjpeg` below — this process never serves a browser-facing HTML page itself, just the raw MJPEG stream and JSON/control endpoints).
 
 ## Configuration
 
@@ -85,14 +85,17 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /webrtc/offer?stream=main\|lores` | WHEP-style signaling — body `{"sdp":"..."}` (SDP offer), response `{"sdp":"..."}` (SDP answer) |
+| `GET /stream/main.mjpeg` | Live main-stream video, `multipart/x-mixed-replace` MJPEG — usable directly as `<img src="...">` |
+| `GET /stream/lores.mjpeg` | Live lores-stream video, same format |
 | `/status.json` | Pipeline stats, FPS, client count, telemetry |
 | `/annotate?main=true\|false&lores=true\|false` | Toggle delayed+annotated mode per resolution |
 | `/osd?camera_id=true\|false&time=true\|false` | Toggle OSD overlays at runtime |
 | `/camera?id=N` | Switch active camera (proxied to picam-raw) |
-| `/select?stream=main\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
+| `/select?stream=main\|lores` | Validates/echoes a stream name for client/UI sync (real per-viewer selection happens via which `/stream/*.mjpeg` URL is requested) |
+| `/debug/frame.jpg?stream=main\|lores` | JPEG-encodes the current live frame straight from the mailbox, bypassing the normal encode/broadcast path — diagnostic |
+| `/debug/frame.raw?stream=main\|lores` | Raw I420 bytes of the current live frame, no re-encode, with `X-Frame-*` headers reporting width/height/length — diagnostic |
 
-`/webrtc/offer` is meant to be called by `picam-frontend`, not a browser directly. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
+`/stream/*.mjpeg` connections stay open (streaming) until the client disconnects; typically called by `picam-frontend`, though any HTTP client (including a browser directly) can connect. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
 
 ### Examples
 
@@ -116,11 +119,11 @@ echo status | nc <pi-ip> 8091
 ## Architecture
 
 ```
-picam-raw  ─────(UDP YUV420)────► picam-orchestrator ──(WebRTC/VP8)──► picam-frontend ──► browsers
+picam-raw  ─────(UDP YUV420)────► picam-orchestrator ──(MJPEG/HTTP)──► picam-frontend ──► browsers
 picam-hailo ────(TCP JSON)──────►        │
 picam-recorder ◄──(TCP control)──────────┤
                                          ▼
-                            POST /webrtc/offer (WHEP-style signaling)
+                        GET /stream/main.mjpeg | /stream/lores.mjpeg
 ```
 
 ### Package layout
@@ -135,16 +138,16 @@ picam-recorder ◄──(TCP control)──────────┤
 | `internal/camrpc` | One-shot camera-switch TCP command to picam-raw |
 | `internal/recorder` | picam-recorder TCP control + detection-triggered recording orchestration |
 | `internal/annotate` | 5x7 bitmap font, Y-plane box/label drawing, OSD burn-in |
-| `internal/snapshot` | YUV420→JPEG for event snapshot files (stdlib `image/jpeg`) |
-| `internal/vp8` | cgo binding to libvpx for realtime VP8 encoding |
+| `internal/imgscale` | Box-filter I420 downscale, used to cap the main stream's web-display resolution below its capture resolution |
+| `internal/snapshot` | YUV420→JPEG, shared by event snapshot files and the live MJPEG streams (stdlib `image/jpeg`) |
 | `internal/pipestat` | Shared pipeline counters read by both status endpoints |
-| `internal/webrtcsrv` | WHEP signaling, WebRTC client management, control endpoints, `/status.json` |
+| `internal/mjpegsrv` | MJPEG-over-HTTP streaming, client management, control endpoints, `/status.json` |
 | `internal/statussrv` | Plain-text TCP status protocol |
 | `cmd/picam-orchestrator` | Startup wiring and the main encode loop |
 
 ### Threading model
 
-Each network-facing component (`rawframe.Receiver`, `detect.Run`, `telemetry.Run`, `recorder.EventRecorder`) runs on its own goroutine(s), all cancelled via a single `context.Context` cancelled on SIGINT/SIGTERM (`signal.NotifyContext`). The two `vp8.Encoder` instances (one per resolution) are stateful and driven serially by the single main-loop goroutine — never called concurrently, matching VP8's inter-frame prediction requirement. The WebRTC client list (`webrtcsrv.Server.clients`) is a copy-on-write `atomic.Pointer[[]*Client]`: the hot per-tick broadcast path does a single atomic load and never takes a lock, while register/prune (rare) rebuild and atomically publish a fresh slice. Each client has its own small buffered channel + writer goroutine feeding `TrackLocalStaticSample.WriteSample`, so one slow/stalled client can't block the encoder or any other client.
+Each network-facing component (`rawframe.Receiver`, `detect.Run`, `telemetry.Run`, `recorder.EventRecorder`) runs on its own goroutine(s), all cancelled via a single `context.Context` cancelled on SIGINT/SIGTERM (`signal.NotifyContext`). JPEG encoding (`snapshot.Encode`) is stateless — no persistent encoder object, unlike VP8's inter-frame prediction requirement — so it's simply called inline from the single main-loop goroutine, once per resolution per tick. The MJPEG client list (`mjpegsrv.Server.clients`) is a copy-on-write `atomic.Pointer[[]*Client]`: the hot per-tick broadcast path does a single atomic load and never takes a lock, while register/prune (rare — only on viewer connect/disconnect) rebuild and atomically publish a fresh slice. Each client has its own small buffered channel + a per-request goroutine (the `GET /stream/*.mjpeg` handler itself) writing multipart parts to the HTTP response, so one slow/stalled client can't block the encoder or any other client — a dropped frame has no effect on any other frame, unlike VP8 where it broke the prediction chain until the next keyframe.
 
 ### Known, intentionally-preserved quirks
 

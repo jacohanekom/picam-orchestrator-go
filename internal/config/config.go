@@ -168,11 +168,11 @@ type Config struct {
 	PingEvery   int
 
 	// MainDisplayMaxWidth/Height cap the resolution the main stream is
-	// actually encoded/displayed at over WebRTC — independent of
+	// actually encoded/displayed at over MJPEG — independent of
 	// MainWidth/MainHeight, which is the camera's native capture
 	// resolution (used unchanged for recording and snapshots). The
 	// frame is downscaled (preserving aspect ratio, never upscaled) to
-	// fit within this box before VP8 encoding. 0 means no cap.
+	// fit within this box before JPEG encoding. 0 means no cap.
 	MainDisplayMaxWidth  int
 	MainDisplayMaxHeight int
 
@@ -190,17 +190,15 @@ type Config struct {
 	DelayMs int
 
 	// [encode]
-	VP8BitrateMainKbps  int
-	VP8BitrateLoresKbps int
-	VP8CPUUsedMain      int
-	VP8CPUUsedLores     int
-	JPEGQuality         int
-	OutputFPSLive       int
-	OutputFPSAnnotated  int
-
-	// [webrtc]
-	ICEPortMin int
-	ICEPortMax int
+	// MJPEGQualityMain/Lores are the live-stream JPEG quality (1-100,
+	// libjpeg-style); JPEGQuality (below) is separate and applies only
+	// to EventRecorder's saved snapshot files, which can reasonably want
+	// a different (typically higher) quality than the live view.
+	MJPEGQualityMain   int
+	MJPEGQualityLores  int
+	JPEGQuality        int
+	OutputFPSLive      int
+	OutputFPSAnnotated int
 
 	// [annotate]
 	AnnotateLores bool
@@ -266,21 +264,11 @@ func Load(path string) (*Config, error) {
 
 		DelayMs: r.int("delay.delay_ms", 1000),
 
-		VP8BitrateMainKbps:  r.int("encode.vp8_bitrate_main_kbps", 2000),
-		VP8BitrateLoresKbps: r.int("encode.vp8_bitrate_lores_kbps", 500),
-		// VP8 realtime speed (VP8E_SET_CPUUSED): higher = faster encode,
-		// lower quality. Main (full-res, ~13x lores's pixels) defaults
-		// faster so its encode keeps up with real time on the Pi; lores
-		// has ample headroom and stays at the original 8. Valid range for
-		// VP8 realtime is roughly 4-16.
-		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 12),
-		VP8CPUUsedLores: r.int("encode.vp8_cpu_used_lores", 8),
-		JPEGQuality:     r.int("encode.jpeg_quality", 80),
-		OutputFPSLive:       r.int("encode.output_fps_live", 15),
-		OutputFPSAnnotated:  r.int("encode.output_fps_annotated", 30),
-
-		ICEPortMin: r.int("webrtc.ice_port_min", 50000),
-		ICEPortMax: r.int("webrtc.ice_port_max", 50100),
+		MJPEGQualityMain:   r.int("encode.mjpeg_quality_main", 80),
+		MJPEGQualityLores:  r.int("encode.mjpeg_quality_lores", 70),
+		JPEGQuality:        r.int("encode.jpeg_quality", 80),
+		OutputFPSLive:      r.int("encode.output_fps_live", 15),
+		OutputFPSAnnotated: r.int("encode.output_fps_annotated", 30),
 
 		AnnotateLores: r.boolean("annotate.lores", false),
 		AnnotateMain:  r.boolean("annotate.main", false),

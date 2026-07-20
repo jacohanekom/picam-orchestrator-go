@@ -1,7 +1,20 @@
-// Package webrtcsrv serves picam-orchestrator's WHEP-style WebRTC
-// signaling plus its plain HTTP control/status endpoints, and manages
-// the set of subscribed WebRTC clients.
-package webrtcsrv
+// Package mjpegsrv serves picam-orchestrator's live main/lores streams
+// as HTTP multipart/x-mixed-replace MJPEG (the classic <img src="...">
+// -compatible IP-camera format) plus the plain HTTP control/status
+// endpoints, and manages the set of subscribed viewers.
+//
+// This replaces an earlier WebRTC/VP8 implementation: VP8 has no
+// hardware encode path on any Raspberry Pi, and software VP8 encoding
+// (motion estimation, inter-frame prediction) was overloading the CPU.
+// JPEG has neither — every frame is encoded independently — so it's
+// inherently far cheaper even in pure software (reusing the same
+// stdlib encoder internal/snapshot already used for event snapshots),
+// and it drops WebRTC's ICE/DTLS/SFU machinery entirely in favor of a
+// plain HTTP connection per viewer. The trade-off: no built-in
+// adaptive bitrate/resolution switching (there's no RTCP feedback
+// channel to adapt from) and no sub-second WebRTC-grade latency — both
+// judged not worth the CPU and complexity cost on this hardware.
+package mjpegsrv
 
 import (
 	"context"
@@ -12,8 +25,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pion/webrtc/v4"
 
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/telemetry"
@@ -48,21 +59,18 @@ func ParseStream(s string, def StreamSource) StreamSource {
 	}
 }
 
-// Config configures the WebRTC/control HTTP server.
+// Config configures the MJPEG/control HTTP server.
 type Config struct {
-	HTTPPort               int
-	DefaultStream          StreamSource
-	ICEPortMin, ICEPortMax uint16
-	PicamRawHost           string
-	PicamRawCmdPort        int
-	MaxClients             int
+	HTTPPort        int
+	DefaultStream   StreamSource
+	PicamRawHost    string
+	PicamRawCmdPort int
+	MaxClients      int
 
 	// DebugFrameJPEG, if set, JPEG-encodes the current frame for the
-	// given stream straight from its live mailbox — bypassing VP8 and
-	// WebRTC entirely — for the GET /debug/frame.jpg diagnostic. Lets a
-	// headless box confirm (via curl) whether the frame feeding the VP8
-	// encoder is already corrupt or whether the corruption is introduced
-	// downstream in encode/transport. nil disables the endpoint.
+	// given stream straight from its live mailbox — bypassing the
+	// normal encode/broadcast path entirely — for the GET
+	// /debug/frame.jpg diagnostic. nil disables the endpoint.
 	DebugFrameJPEG func(stream StreamSource) ([]byte, bool)
 
 	// DebugFrameRaw, if set, returns the current raw I420 frame bytes for
@@ -72,18 +80,16 @@ type Config struct {
 	DebugFrameRaw func(stream StreamSource) (data []byte, w, h int, ok bool)
 }
 
-// Server serves WHEP signaling plus the plain control/status endpoints,
-// and owns the set of currently subscribed WebRTC clients.
+// Server serves MJPEG streaming plus the plain control/status
+// endpoints, and owns the set of currently subscribed viewers.
 type Server struct {
 	cfg Config
-	api *webrtc.API
 
 	// clients is a copy-on-write client list: readers (the hot broadcast
-	// path, called many times a second) do a single atomic load and never
-	// take a lock; writers (register/prune, rare) hold registerMu, build
-	// a fresh slice, and atomically publish it. Direct translation of the
-	// C++ original's atomic_load/atomic_store<shared_ptr<const vector<>>>
-	// pattern onto Go's atomic.Pointer.
+	// path, called once per encoded frame) do a single atomic load and
+	// never take a lock; writers (register/prune, rare — only on
+	// connect/disconnect) hold registerMu, build a fresh slice, and
+	// atomically publish it.
 	clients    atomic.Pointer[[]*Client]
 	registerMu sync.Mutex
 
@@ -99,23 +105,11 @@ type Server struct {
 }
 
 // New builds a Server. Call Start to begin listening.
-func New(cfg Config, status *pipestat.Status, tel *telemetry.State) (*Server, error) {
-	se := webrtc.SettingEngine{}
-	if err := se.SetEphemeralUDPPortRange(cfg.ICEPortMin, cfg.ICEPortMax); err != nil {
-		return nil, fmt.Errorf("webrtcsrv: invalid ICE port range %d-%d: %w", cfg.ICEPortMin, cfg.ICEPortMax, err)
-	}
-	// Convenience for same-host dev/testing; harmless in the real
-	// deployment topology (picam-frontend is always a separate host) —
-	// see plan notes for why this is a safe deviation from the C++
-	// original, which never enabled it.
-	se.SetIncludeLoopbackCandidate(true)
-
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
-
-	s := &Server{cfg: cfg, api: api, status: status, telemetry: tel}
+func New(cfg Config, status *pipestat.Status, tel *telemetry.State) *Server {
+	s := &Server{cfg: cfg, status: status, telemetry: tel}
 	empty := []*Client{}
 	s.clients.Store(&empty)
-	return s, nil
+	return s
 }
 
 // Start binds the HTTP listener and begins serving in the background.
@@ -142,7 +136,7 @@ func (s *Server) Start() {
 	log.Printf("[HTTP] Listening on :%d", s.cfg.HTTPPort)
 }
 
-// Stop shuts down the HTTP server and closes every live PeerConnection.
+// Stop shuts down the HTTP server and disconnects every live client.
 func (s *Server) Stop(ctx context.Context) {
 	if s.httpSrv != nil {
 		_ = s.httpSrv.Shutdown(ctx)
@@ -153,16 +147,13 @@ func (s *Server) Stop(ctx context.Context) {
 }
 
 // ClientCounts returns the current live client counts, in one pass.
-// Counted by currentStream (which adaptQuality may have moved away from
-// the client's requested maxStream), since that's what determines which
-// encoder's output this client actually needs right now.
 func (s *Server) ClientCounts() (total, main, lores int) {
 	for _, c := range *s.clients.Load() {
 		if !c.alive.Load() {
 			continue
 		}
 		total++
-		if c.currentStream() == StreamMain {
+		if c.stream == StreamMain {
 			main++
 		} else {
 			lores++
@@ -171,40 +162,25 @@ func (s *Server) ClientCounts() (total, main, lores int) {
 	return
 }
 
-// ConsumeForceKeyframe reports whether any alive client currently
-// relaying stream needs a forced keyframe, clearing the flag on every
-// such client as it checks (read-and-clear, matching the C++ original).
-func (s *Server) ConsumeForceKeyframe(stream StreamSource) bool {
-	any := false
+// Broadcast sends an already-JPEG-encoded frame to every alive client
+// subscribed to stream. Non-blocking: a client whose send queue is full
+// simply drops this frame rather than stalling the shared encode loop
+// or any other client — unlike VP8, dropping a JPEG frame has no effect
+// on any other frame (no inter-frame prediction), so this is a purely
+// cosmetic one-frame skip for that client, not a corruption risk.
+func (s *Server) Broadcast(stream StreamSource, jpeg []byte) {
 	for _, c := range *s.clients.Load() {
-		if !c.alive.Load() || c.currentStream() != stream {
-			continue
-		}
-		if c.forceKeyframe.Swap(false) {
-			any = true
-		}
-	}
-	return any
-}
-
-// Broadcast sends an already-VP8-encoded frame to every alive client
-// currently relaying stream. Non-blocking: a client whose send queue is
-// full simply drops this frame rather than stalling the shared encode
-// loop or any other client.
-func (s *Server) Broadcast(stream StreamSource, vp8 []byte, dur time.Duration) {
-	for _, c := range *s.clients.Load() {
-		if !c.alive.Load() || c.currentStream() != stream {
+		if !c.alive.Load() || c.stream != stream {
 			continue
 		}
 		select {
-		case c.sendCh <- sampleJob{data: vp8, dur: dur}:
+		case c.sendCh <- jpeg:
 		default:
 			total := c.droppedFrames.Add(1)
 			now := time.Now().UnixNano()
 			last := c.lastDropLogged.Load()
 			if now-last > int64(time.Second) && c.lastDropLogged.CompareAndSwap(last, now) {
-				log.Printf("[WebRTC] %s client send queue full — dropped frame (total dropped: %d); "+
-					"this breaks VP8's prediction chain until the next keyframe", stream, total)
+				log.Printf("[MJPEG] %s client send queue full — dropped frame (total dropped: %d)", stream, total)
 			}
 		}
 	}

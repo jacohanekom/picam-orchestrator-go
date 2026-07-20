@@ -1,9 +1,12 @@
-package webrtcsrv
+package mjpegsrv
 
 import (
 	"encoding/json"
+	"log"
 	"math"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 
@@ -11,7 +14,8 @@ import (
 )
 
 func (s *Server) registerHandlers(mux *http.ServeMux) {
-	mux.HandleFunc("POST /webrtc/offer", s.handleOffer)
+	mux.HandleFunc("GET /stream/main.mjpeg", s.handleStream(StreamMain))
+	mux.HandleFunc("GET /stream/lores.mjpeg", s.handleStream(StreamLores))
 	mux.HandleFunc("GET /select", s.handleSelect)
 	mux.HandleFunc("GET /osd", s.handleOSD)
 	mux.HandleFunc("GET /annotate", s.handleAnnotate)
@@ -22,54 +26,60 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/", handleNotFound)
 }
 
-// handleDebugFrame implements GET /debug/frame.jpg?stream=main|lores. It
-// JPEG-encodes the current live frame directly from the mailbox,
-// bypassing VP8/WebRTC, so a headless box can `curl` it to see whether
-// the frame feeding the encoder is already corrupt.
-func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.DebugFrameJPEG == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug frame endpoint disabled"})
-		return
-	}
-	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
-	jpg, ok := s.cfg.DebugFrameJPEG(stream)
-	if !ok || len(jpg) == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
-		return
-	}
-	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(jpg)
-}
+// handleStream implements GET /stream/main.mjpeg and GET
+// /stream/lores.mjpeg: a classic multipart/x-mixed-replace MJPEG
+// stream, directly usable as an <img src="..."> in a browser (or
+// relayed through picam-frontend to one), that runs until the client
+// disconnects or the server shuts down. No SDP negotiation, no ICE — a
+// single plain HTTP GET.
+func (s *Server) handleStream(stream StreamSource) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if total, _, _ := s.ClientCounts(); total >= s.cfg.MaxClients {
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
 
-// handleDebugFrameRaw implements GET /debug/frame.raw?stream=main|lores.
-// It returns the current mailbox frame's raw I420 bytes with no re-encode,
-// plus diagnostic headers reporting the frame's width/height, actual data
-// length, and the length expected for those dimensions. A mismatch
-// between actual and expected length (visible with `curl -sI`) points
-// straight at a reassembly/size bug; matching lengths with corrupt bytes
-// points at a packing/plane bug to be found in the dumped bytes.
-func (s *Server) handleDebugFrameRaw(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.DebugFrameRaw == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug raw endpoint disabled"})
-		return
+		mw := multipart.NewWriter(w)
+		w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary="+mw.Boundary())
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		c := newClient(stream)
+		s.registerClient(c)
+		log.Printf("[MJPEG] client connected, stream=%s", stream)
+		defer func() {
+			c.markDead()
+			log.Printf("[MJPEG] client disconnected, stream=%s", stream)
+		}()
+
+		reqCtx := r.Context()
+		for {
+			select {
+			case <-reqCtx.Done(): // client disconnected
+				return
+			case <-c.done: // server-initiated (e.g. shutdown)
+				return
+			case jpg := <-c.sendCh:
+				pw, err := mw.CreatePart(textproto.MIMEHeader{
+					"Content-Type":   {"image/jpeg"},
+					"Content-Length": {strconv.Itoa(len(jpg))},
+				})
+				if err != nil {
+					return
+				}
+				if _, err := pw.Write(jpg); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
 	}
-	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
-	data, fw, fh, ok := s.cfg.DebugFrameRaw(stream)
-	if !ok || len(data) == 0 {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
-		return
-	}
-	expected := fw * fh * 3 / 2
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Frame-Width", strconv.Itoa(fw))
-	w.Header().Set("X-Frame-Height", strconv.Itoa(fh))
-	w.Header().Set("X-Frame-Datalen", strconv.Itoa(len(data)))
-	w.Header().Set("X-Frame-Expectedlen", strconv.Itoa(expected))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -105,7 +115,7 @@ func parseBoolParam(v string) (val bool, present bool) {
 
 // handleSelect implements GET /select?stream=<name>. It validates and
 // echoes the stream name for client/UI sync; real per-client stream
-// selection happens via the offer's own ?stream= param.
+// selection happens via which /stream/*.mjpeg URL a client requests.
 func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stream": stream.String()})
@@ -195,4 +205,55 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 			"camera_label":  tel.CameraLabel,
 		},
 	})
+}
+
+// handleDebugFrame implements GET /debug/frame.jpg?stream=main|lores. It
+// JPEG-encodes the current live frame directly from the mailbox,
+// bypassing the normal encode/broadcast path, so a headless box can
+// `curl` it to see whether the frame feeding the encoder is already
+// corrupt.
+func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.DebugFrameJPEG == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug frame endpoint disabled"})
+		return
+	}
+	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
+	jpg, ok := s.cfg.DebugFrameJPEG(stream)
+	if !ok || len(jpg) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(jpg)
+}
+
+// handleDebugFrameRaw implements GET /debug/frame.raw?stream=main|lores.
+// It returns the current mailbox frame's raw I420 bytes with no re-encode,
+// plus diagnostic headers reporting the frame's width/height, actual data
+// length, and the length expected for those dimensions. A mismatch
+// between actual and expected length (visible with `curl -sI`) points
+// straight at a reassembly/size bug; matching lengths with corrupt bytes
+// points at a packing/plane bug to be found in the dumped bytes.
+func (s *Server) handleDebugFrameRaw(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.DebugFrameRaw == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug raw endpoint disabled"})
+		return
+	}
+	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
+	data, fw, fh, ok := s.cfg.DebugFrameRaw(stream)
+	if !ok || len(data) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
+		return
+	}
+	expected := fw * fh * 3 / 2
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Frame-Width", strconv.Itoa(fw))
+	w.Header().Set("X-Frame-Height", strconv.Itoa(fh))
+	w.Header().Set("X-Frame-Datalen", strconv.Itoa(len(data)))
+	w.Header().Set("X-Frame-Expectedlen", strconv.Itoa(expected))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
