@@ -24,10 +24,16 @@ func drawString(y []byte, w, h, px, py int, text string) {
 }
 
 // DrawOSD burns "cam: <cameraLabel>" bottom-left (if showCameraID) and a
-// local-time "YYYY-MM-DD HH:MM:SS" timestamp derived from timestampUs
-// bottom-right (if showTime) into the Y-plane y. No-op if both flags are
-// false.
-func DrawOSD(y []byte, w, h int, timestampUs int64, cameraLabel string, showCameraID, showTime bool) {
+// "YYYY-MM-DD HH:MM:SS" timestamp derived from timestampUs bottom-right
+// (if showTime) into the Y-plane y. No-op if both flags are false.
+//
+// utcOffsetMinutes formats the timestamp in picam-raw's own timezone
+// (relayed live over the telemetry stream — see internal/telemetry),
+// not this process's system timezone: picam-raw is the one actually
+// reading CLOCK_REALTIME for timestampUs, so it's the authoritative
+// answer to what wall-clock time that capture happened at, even if this
+// process ever runs on a different host/timezone than picam-raw.
+func DrawOSD(y []byte, w, h int, timestampUs int64, cameraLabel string, utcOffsetMinutes int, showCameraID, showTime bool) {
 	if !showCameraID && !showTime {
 		return
 	}
@@ -43,11 +49,8 @@ func DrawOSD(y []byte, w, h int, timestampUs int64, cameraLabel string, showCame
 
 	if showTime {
 		sec := timestampUs / 1_000_000
-		// Local, not UTC: matches the frontend's separate status-panel
-		// clock, which renders via the browser's toLocaleTimeString()
-		// (local time) — these two previously disagreed by the system's
-		// UTC offset.
-		text := time.Unix(sec, 0).Local().Format("2006-01-02 15:04:05")
+		zone := time.FixedZone("picam-raw", utcOffsetMinutes*60)
+		text := time.Unix(sec, 0).In(zone).Format("2006-01-02 15:04:05")
 		tw := textWidth(text)
 		x := w - tw - osdPad
 		drawBg(y, w, h, x-2, bottomY-2, tw+4, th+4)

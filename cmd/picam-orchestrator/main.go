@@ -199,7 +199,7 @@ func main() {
 	}
 	log.Printf("[Main] Streams active. Open http://<pi-ip>:%d", cfg.HTTPPort)
 
-	runMainLoop(ctx, cfg, srv, status, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf, mainEncoder, loresEncoder)
+	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf, mainEncoder, loresEncoder)
 
 	log.Printf("[Main] Shutting down.")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -236,6 +236,7 @@ func runMainLoop(
 	cfg *config.Config,
 	srv *webrtcsrv.Server,
 	status *pipestat.Status,
+	telState *telemetry.State,
 	detBuf *detect.Buffer,
 	mainMailbox, loresMailbox *rawframe.Mailbox,
 	mainDelayBuf, loresDelayBuf *delaybuffer.DelayBuffer,
@@ -289,7 +290,8 @@ func runMainLoop(
 				}
 				if srv.OSDCameraID.Load() || srv.OSDTime.Load() {
 					annotate.DrawOSD(data, frame.Width, frame.Height, frame.TimestampUs,
-						cfg.CameraLabel(int(frame.CameraIndex)), srv.OSDCameraID.Load(), srv.OSDTime.Load())
+						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
+						srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
 				forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMain)
 				encStart := time.Now()
@@ -335,7 +337,8 @@ func runMainLoop(
 				}
 				if srv.OSDCameraID.Load() || srv.OSDTime.Load() {
 					annotate.DrawOSD(data, frame.Width, frame.Height, frame.TimestampUs,
-						cfg.CameraLabel(int(frame.CameraIndex)), srv.OSDCameraID.Load(), srv.OSDTime.Load())
+						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
+						srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
 				forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamLores)
 				if vp8Bytes, err := loresEncoder.Encode(data, frame.TimestampUs, forceKf); err != nil {
