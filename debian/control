@@ -11,7 +11,7 @@ Rules-Requires-Root: no
 
 Package: picam-orchestrator
 Architecture: arm64
-Depends: ${shlibs:Depends}, ${misc:Depends}, picam-raw, picam-hailo
+Depends: ${shlibs:Depends}, ${misc:Depends}, picam-raw, picam-hailo, aipicam-config
 Description: WebRTC (VP8) stream + camera control backend for picam-raw + picam-hailo (Go)
  Headless backend exposing Main / Lores live video over WebRTC (VP8,
  real inter-frame video). WHEP-style signaling at
