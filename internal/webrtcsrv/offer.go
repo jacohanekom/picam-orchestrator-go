@@ -35,7 +35,14 @@ type answerResponse struct {
 // returns normal errors rather than panicking on a malformed offer, but
 // a bug in this glue code must still not be able to take down the other
 // (up to 49) connected clients.
-func (s *Server) negotiate(offerSDP string, stream StreamSource) (answerSDP string, err error) {
+//
+// maxStream is the ceiling quality this client may reach — the client's
+// track/broadcast subscription can be adjusted downward from it live in
+// response to connection quality (see Client.adaptQuality), but never
+// above it, so an overview/thumbnail request for "lores" stays pinned
+// there while a "main" detail-view request can range between lores and
+// main.
+func (s *Server) negotiate(offerSDP string, maxStream StreamSource) (answerSDP string, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("panic in webrtc negotiation: %v", p)
@@ -53,7 +60,7 @@ func (s *Server) negotiate(offerSDP string, stream StreamSource) (answerSDP stri
 
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
-		"video", "picam-"+stream.String(),
+		"video", "picam-"+maxStream.String(),
 	)
 	if err != nil {
 		pc.Close()
@@ -66,7 +73,7 @@ func (s *Server) negotiate(offerSDP string, stream StreamSource) (answerSDP stri
 		return "", err
 	}
 
-	client := newClient(pc, track, sender, stream)
+	client := newClient(pc, track, sender, maxStream)
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		switch state {

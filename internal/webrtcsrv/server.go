@@ -153,13 +153,16 @@ func (s *Server) Stop(ctx context.Context) {
 }
 
 // ClientCounts returns the current live client counts, in one pass.
+// Counted by currentStream (which adaptQuality may have moved away from
+// the client's requested maxStream), since that's what determines which
+// encoder's output this client actually needs right now.
 func (s *Server) ClientCounts() (total, main, lores int) {
 	for _, c := range *s.clients.Load() {
 		if !c.alive.Load() {
 			continue
 		}
 		total++
-		if c.stream == StreamMain {
+		if c.currentStream() == StreamMain {
 			main++
 		} else {
 			lores++
@@ -168,13 +171,13 @@ func (s *Server) ClientCounts() (total, main, lores int) {
 	return
 }
 
-// ConsumeForceKeyframe reports whether any alive client subscribed to
-// stream currently needs a forced keyframe, clearing the flag on every
+// ConsumeForceKeyframe reports whether any alive client currently
+// relaying stream needs a forced keyframe, clearing the flag on every
 // such client as it checks (read-and-clear, matching the C++ original).
 func (s *Server) ConsumeForceKeyframe(stream StreamSource) bool {
 	any := false
 	for _, c := range *s.clients.Load() {
-		if !c.alive.Load() || c.stream != stream {
+		if !c.alive.Load() || c.currentStream() != stream {
 			continue
 		}
 		if c.forceKeyframe.Swap(false) {
@@ -185,12 +188,12 @@ func (s *Server) ConsumeForceKeyframe(stream StreamSource) bool {
 }
 
 // Broadcast sends an already-VP8-encoded frame to every alive client
-// subscribed to stream. Non-blocking: a client whose send queue is full
-// simply drops this frame rather than stalling the shared encode loop or
-// any other client.
+// currently relaying stream. Non-blocking: a client whose send queue is
+// full simply drops this frame rather than stalling the shared encode
+// loop or any other client.
 func (s *Server) Broadcast(stream StreamSource, vp8 []byte, dur time.Duration) {
 	for _, c := range *s.clients.Load() {
-		if !c.alive.Load() || c.stream != stream {
+		if !c.alive.Load() || c.currentStream() != stream {
 			continue
 		}
 		select {
