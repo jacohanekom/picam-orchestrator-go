@@ -30,21 +30,40 @@ func (d *DelayBuffer) Push(f rawframe.RawFrame) {
 	d.mu.Unlock()
 }
 
-// Pop returns the oldest queued frame if it has aged past the configured
-// delay, without blocking. The main loop calls this every tick
-// regardless of annotation mode or client count, so the buffer never
-// grows unbounded and stays "warm" for when annotation is toggled on.
+// Pop drains every queued frame that has aged past the configured delay
+// and returns the newest of them, without blocking. Draining all due
+// frames per call — rather than just the oldest one — is load-bearing:
+// the main loop calls Pop once per tick, and a tick that JPEG-encodes a
+// frame can take longer than the frame arrival interval (the encode is
+// synchronous in the same loop; on a Pi a main-resolution encode
+// routinely exceeds the output-fps interval, which the loop even logs
+// as "falling behind real time"). One-pop-per-tick under that condition
+// means frames enter faster than they leave, growing the queue — at
+// native main resolution that's multiple MB per frame — without bound
+// for as long as anyone is streaming. Returning only the newest due
+// frame is consistent with the encode path's semantics: output fps is
+// below input fps, so intermediate frames are skipped by design either
+// way (the non-annotated path reads a latest-frame mailbox for the same
+// reason).
 func (d *DelayBuffer) Pop() (rawframe.RawFrame, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if len(d.q) == 0 {
+	n := 0
+	for n < len(d.q) && time.Since(d.q[n].Arrival) >= d.delay {
+		n++
+	}
+	if n == 0 {
 		return rawframe.RawFrame{}, false
 	}
-	if time.Since(d.q[0].Arrival) < d.delay {
-		return rawframe.RawFrame{}, false
+	f := d.q[n-1]
+	// Zero the vacated slots so the (large) frame buffers they point to
+	// become collectable immediately — re-slicing alone keeps them
+	// reachable through the shared backing array until append happens to
+	// reallocate it.
+	for i := 0; i < n; i++ {
+		d.q[i] = rawframe.RawFrame{}
 	}
-	f := d.q[0]
-	d.q = d.q[1:]
+	d.q = d.q[n:]
 	return f, true
 }
 
