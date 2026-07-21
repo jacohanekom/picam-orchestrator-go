@@ -129,11 +129,51 @@ func (s *Server) Start() {
 
 	s.httpSrv = &http.Server{Handler: withCORS(mux)}
 	go func() {
-		if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		// keepAliveListener, not the raw ln: calling Serve directly on a
+		// plain net.Listen listener (rather than going through
+		// http.Server.ListenAndServe, which wraps it this same way
+		// internally) skips TCP keepalive entirely. That matters a lot
+		// here specifically: these are long-lived MJPEG streaming
+		// responses to viewers on WiFi/mobile, which routinely vanish
+		// without ever sending a FIN (screen lock, backgrounded app,
+		// walked out of range, a NAT table entry timing out). Without
+		// keepalive, the only way the server ever notices is a write
+		// failing — which needs the OS's own TCP retransmission timeout
+		// on unacked data to finally give up, which can take tens of
+		// minutes (or effectively never, in a blackhole-routing case).
+		// Until then the handler goroutine, its buffered frames, and the
+		// OS socket buffers all stay alive, and the zombie still counts
+		// toward MaxClients — a slow, silent leak on every viewer that
+		// ever disconnects uncleanly, which is the common case for this
+		// kind of client.
+		if err := s.httpSrv.Serve(keepAliveListener{ln.(*net.TCPListener)}); err != nil && err != http.ErrServerClosed {
 			log.Printf("[HTTP] serve error: %v", err)
 		}
 	}()
 	log.Printf("[HTTP] Listening on :%d", s.cfg.HTTPPort)
+}
+
+// keepAliveListener enables TCP keepalive on every accepted connection —
+// the same wrapper net/http's own ListenAndServe applies internally
+// (there called tcpKeepAliveListener), needed here because Start calls
+// net.Listen + Serve directly instead of going through ListenAndServe.
+// A 30s period rather than the stdlib default of 3 minutes: this
+// server's connections are almost all long-lived MJPEG streams to
+// WiFi/mobile clients that routinely vanish without a clean close, so
+// detecting that promptly matters more here than it does for typical
+// short-lived HTTP request/response traffic.
+type keepAliveListener struct {
+	*net.TCPListener
+}
+
+func (ln keepAliveListener) Accept() (net.Conn, error) {
+	c, err := ln.AcceptTCP()
+	if err != nil {
+		return nil, err
+	}
+	_ = c.SetKeepAlive(true)
+	_ = c.SetKeepAlivePeriod(30 * time.Second)
+	return c, nil
 }
 
 // Stop shuts down the HTTP server and disconnects every live client.
