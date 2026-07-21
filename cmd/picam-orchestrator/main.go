@@ -123,7 +123,7 @@ func main() {
 		}
 		return jpg
 	}
-	evtRecorder := recorder.New(cfg.RecorderHost, cfg.RecorderPort, snapshotFn)
+	evtRecorder := recorder.New(cfg.RecorderHost, cfg.RecorderPort, cfg.RecorderIdleSecs, snapshotFn)
 
 	// The receiver callback hands each reassembled frame to both the live
 	// mailbox and the delay buffer; the mailbox gets its own independent

@@ -23,37 +23,50 @@ type SnapshotFunc func(detect.Event) []byte
 // EventRecorder starts/stops picam-recorder in response to detection
 // activity and writes a JSON event log alongside each recording.
 type EventRecorder struct {
-	host       string
-	port       int
-	snapshotFn SnapshotFunc
+	host        string
+	port        int
+	snapshotFn  SnapshotFunc
+	idleTimeout time.Duration
 
-	mu            sync.Mutex
-	haveEvents    bool
-	accumulated   []detect.Event
-	recording     bool
-	stopRequested bool
-	currentFile   string
-	startedUs     int64
+	mu              sync.Mutex
+	haveEvents      bool
+	accumulated     []detect.Event
+	recording       bool
+	stopRequested   bool
+	currentFile     string
+	startedUs       int64
+	lastDetectionAt time.Time
 
 	wake chan struct{}
 }
 
 // New creates an EventRecorder targeting picam-recorder at host:port.
-// snapshotFn may be nil to disable snapshot files.
-func New(host string, port int, snapshotFn SnapshotFunc) *EventRecorder {
+// snapshotFn may be nil to disable snapshot files. idleSecs bounds how
+// long a recording can run without a new non-empty detection before it's
+// force-stopped — a watchdog for when picam-hailo's stream goes quiet
+// without ever sending the empty-detections message that normally
+// triggers an immediate stop (a dropped connection, a hailo restart, or
+// simply a wire protocol that never emits an explicit "nothing here"
+// heartbeat). Without it, a recording — and the accumulated event log
+// backing it — can run and grow unbounded indefinitely. idleSecs <= 0
+// disables the watchdog entirely, restoring the old immediate-stop-only
+// behavior.
+func New(host string, port, idleSecs int, snapshotFn SnapshotFunc) *EventRecorder {
 	return &EventRecorder{
-		host:       host,
-		port:       port,
-		snapshotFn: snapshotFn,
-		wake:       make(chan struct{}, 1),
+		host:        host,
+		port:        port,
+		snapshotFn:  snapshotFn,
+		idleTimeout: time.Duration(idleSecs) * time.Second,
+		wake:        make(chan struct{}, 1),
 	}
 }
 
 // Notify reports a detection event from picam-hailo. A non-empty
 // detection list marks the recorder as having something to record
 // (accumulated for the eventual .events.json, but not itself starting
-// the recording — that happens in Run's loop); an empty list requests
-// an immediate stop if currently recording.
+// the recording — that happens in Run's loop) and resets the idle
+// watchdog; an empty list requests an immediate stop if currently
+// recording.
 func (r *EventRecorder) Notify(evt detect.Event) {
 	r.mu.Lock()
 	if len(evt.Detections) == 0 {
@@ -63,6 +76,7 @@ func (r *EventRecorder) Notify(evt detect.Event) {
 	} else {
 		r.haveEvents = true
 		r.accumulated = append(r.accumulated, evt)
+		r.lastDetectionAt = time.Now()
 	}
 	r.mu.Unlock()
 
@@ -122,6 +136,7 @@ func (r *EventRecorder) tick() {
 			r.recording = true
 			r.currentFile = file
 			r.startedUs = startedUs
+			r.lastDetectionAt = time.Now()
 			log.Printf("[EventRecorder] Started: %s", file)
 		} else {
 			log.Printf("[EventRecorder] Failed to start recorder")
@@ -133,11 +148,17 @@ func (r *EventRecorder) tick() {
 
 	r.mu.Lock()
 	stopNow := r.recording && r.stopRequested
-	if stopNow {
+	idleTimedOut := !stopNow && r.recording && r.idleTimeout > 0 && time.Since(r.lastDetectionAt) >= r.idleTimeout
+	idleFile := r.currentFile
+	if stopNow || idleTimedOut {
 		r.stopRequested = false
+		stopNow = true
 	}
 	r.mu.Unlock()
 
+	if idleTimedOut {
+		log.Printf("[EventRecorder] Stopping %s: idle %v with no new detections (watchdog)", idleFile, r.idleTimeout)
+	}
 	if stopNow {
 		r.flush()
 	}

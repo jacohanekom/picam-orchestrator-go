@@ -217,10 +217,13 @@ type Config struct {
 	// [recorder]
 	RecorderHost string
 	RecorderPort int
-	// RecorderIdleSecs is parsed for config-file compatibility but, matching
-	// the C++ original, is never actually consulted: EventRecorder stops
-	// recording immediately on the first empty-detections event rather than
-	// after a timed idle period.
+	// RecorderIdleSecs bounds how long a recording can run without a new
+	// non-empty detection before EventRecorder force-stops it — a
+	// watchdog for when picam-hailo's stream goes quiet without ever
+	// sending the empty-detections message that normally triggers an
+	// immediate stop. An explicit empty-detections event still stops a
+	// recording immediately regardless of this value; 0 disables the
+	// watchdog.
 	RecorderIdleSecs int
 }
 
