@@ -167,15 +167,6 @@ type Config struct {
 	LoresHeight int
 	PingEvery   int
 
-	// MainDisplayMaxWidth/Height cap the resolution the main stream is
-	// actually encoded/displayed at over WebRTC — independent of
-	// MainWidth/MainHeight, which is the camera's native capture
-	// resolution (used unchanged for recording and snapshots). The
-	// frame is downscaled (preserving aspect ratio, never upscaled) to
-	// fit within this box before VP8 encoding. 0 means no cap.
-	MainDisplayMaxWidth  int
-	MainDisplayMaxHeight int
-
 	// [detections]
 	DetectionsHost string
 	DetectionsPort int
@@ -190,13 +181,21 @@ type Config struct {
 	DelayMs int
 
 	// [encode]
-	VP8BitrateMainKbps  int
-	VP8BitrateLoresKbps int
-	VP8CPUUsedMain      int
-	VP8CPUUsedLores     int
-	JPEGQuality         int
-	OutputFPSLive       int
-	OutputFPSAnnotated  int
+	// Main streams at its native capture resolution (no downscale) as
+	// two independently-bitrated VP8 encodes of the same frame — High is
+	// the ceiling a detail-view browser starts at, Low is what
+	// picam-frontend moves a struggling viewer to (see
+	// relay.viewer.adaptQuality in picam-frontend-go). Both encoders
+	// share VP8CPUUsedMain since they encode identical input at
+	// identical resolution.
+	VP8BitrateMainHighKbps int
+	VP8BitrateMainLowKbps  int
+	VP8BitrateLoresKbps    int
+	VP8CPUUsedMain         int
+	VP8CPUUsedLores        int
+	JPEGQuality            int
+	OutputFPSLive          int
+	OutputFPSAnnotated     int
 
 	// [webrtc]
 	ICEPortMin int
@@ -256,9 +255,6 @@ func Load(path string) (*Config, error) {
 		LoresHeight: r.int("input.lores_height", 360),
 		PingEvery:   r.int("input.ping_every", 5),
 
-		MainDisplayMaxWidth:  r.int("encode.main_display_max_width", 1920),
-		MainDisplayMaxHeight: r.int("encode.main_display_max_height", 1080),
-
 		DetectionsHost: r.str("detections.host", "127.0.0.1"),
 		DetectionsPort: r.int("detections.port", 8558),
 		ToleranceMs:    r.int("detections.tolerance_ms", 150),
@@ -269,13 +265,15 @@ func Load(path string) (*Config, error) {
 
 		DelayMs: r.int("delay.delay_ms", 1000),
 
-		VP8BitrateMainKbps:  r.int("encode.vp8_bitrate_main_kbps", 2000),
-		VP8BitrateLoresKbps: r.int("encode.vp8_bitrate_lores_kbps", 500),
+		VP8BitrateMainHighKbps: r.int("encode.vp8_bitrate_main_high_kbps", 3000),
+		VP8BitrateMainLowKbps:  r.int("encode.vp8_bitrate_main_low_kbps", 800),
+		VP8BitrateLoresKbps:    r.int("encode.vp8_bitrate_lores_kbps", 500),
 		// VP8 realtime speed (VP8E_SET_CPUUSED): higher = faster encode,
-		// lower quality. Main (full-res, ~13x lores's pixels) defaults
-		// faster so its encode keeps up with real time on the Pi; lores
-		// has ample headroom and stays at the original 8. Valid range for
-		// VP8 realtime is roughly 4-16.
+		// lower quality. Main (native-res, run as two simultaneous
+		// encodes — see VP8BitrateMainHighKbps/LowKbps above) defaults
+		// faster so both keep up with real time; lores has ample
+		// headroom and stays at the original 8. Valid range for VP8
+		// realtime is roughly 4-16.
 		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 12),
 		VP8CPUUsedLores: r.int("encode.vp8_cpu_used_lores", 8),
 		JPEGQuality:     r.int("encode.jpeg_quality", 80),

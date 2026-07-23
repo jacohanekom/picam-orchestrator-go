@@ -22,7 +22,6 @@ import (
 	"picam-orchestrator/internal/config"
 	"picam-orchestrator/internal/delaybuffer"
 	"picam-orchestrator/internal/detect"
-	"picam-orchestrator/internal/imgscale"
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/rawframe"
 	"picam-orchestrator/internal/recorder"
@@ -89,7 +88,7 @@ func main() {
 
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
 		HTTPPort:        cfg.HTTPPort,
-		DefaultStream:   webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMain),
+		DefaultStream:   webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMainHigh),
 		ICEPortMin:      uint16(cfg.ICEPortMin),
 		ICEPortMax:      uint16(cfg.ICEPortMax),
 		PicamRawHost:    cfg.TelemetryHost,
@@ -151,24 +150,23 @@ func main() {
 		loresDelayBuf.Push(f)
 	})
 
-	// The live web-displayed main stream is capped below the camera's
-	// native capture resolution (which stays full-res for recording and
-	// snapshots — see snapshotFn/debugFrameJPEG/debugFrameRaw above,
-	// none of which use this) — the encoder is sized for the capped
-	// resolution, and each frame is downscaled to match before encoding
-	// (see runMainLoop).
-	mainEncodeWidth, mainEncodeHeight := imgscale.FitWithinMax(
-		cfg.MainWidth, cfg.MainHeight, cfg.MainDisplayMaxWidth, cfg.MainDisplayMaxHeight)
-	if mainEncodeWidth != cfg.MainWidth || mainEncodeHeight != cfg.MainHeight {
-		log.Printf("[Main] capturing %dx%d, web display capped to %dx%d",
-			cfg.MainWidth, cfg.MainHeight, mainEncodeWidth, mainEncodeHeight)
-	}
-
-	mainEncoder, err := vp8.NewEncoder(mainEncodeWidth, mainEncodeHeight, cfg.VP8BitrateMainKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
+	// Main streams at its native capture resolution — no downscale — as
+	// two independently-bitrated VP8 encodes of the same frame, so
+	// picam-frontend can move a struggling browser viewer between them
+	// (see relay.viewer.adaptQuality in picam-frontend-go) without ever
+	// dropping below native resolution. Both tiers share the same
+	// cpuused speed/quality tuning since they encode identical input at
+	// identical resolution — only the target bitrate differs.
+	mainEncoderHigh, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainHighKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
 	if err != nil {
-		log.Fatalf("[VP8] main encoder: %v", err)
+		log.Fatalf("[VP8] main-high encoder: %v", err)
 	}
-	defer mainEncoder.Close()
+	defer mainEncoderHigh.Close()
+	mainEncoderLow, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainLowKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
+	if err != nil {
+		log.Fatalf("[VP8] main-low encoder: %v", err)
+	}
+	defer mainEncoderLow.Close()
 	loresEncoder, err := vp8.NewEncoder(cfg.LoresWidth, cfg.LoresHeight, cfg.VP8BitrateLoresKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedLores)
 	if err != nil {
 		log.Fatalf("[VP8] lores encoder: %v", err)
@@ -214,7 +212,7 @@ func main() {
 	log.Printf("[Main] Streams active. Open http://<pi-ip>:%d", cfg.HTTPPort)
 
 	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf,
-		mainEncoder, loresEncoder, mainEncodeWidth, mainEncodeHeight)
+		mainEncoderHigh, mainEncoderLow, loresEncoder)
 
 	log.Printf("[Main] Shutting down.")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -228,13 +226,11 @@ func main() {
 func logConfig(cfg *config.Config) {
 	log.Printf("[Config] input       : %s main=%dx%d:%d lores=%dx%d:%d ping_every=%ds",
 		cfg.InputHost, cfg.MainWidth, cfg.MainHeight, cfg.MainPort, cfg.LoresWidth, cfg.LoresHeight, cfg.LoresPort, cfg.PingEvery)
-	log.Printf("[Config] main display: capped to %dx%d (0 = no cap; capture/recording/snapshots stay native)",
-		cfg.MainDisplayMaxWidth, cfg.MainDisplayMaxHeight)
 	log.Printf("[Config] detections  : %s:%d tolerance_ms=%d", cfg.DetectionsHost, cfg.DetectionsPort, cfg.ToleranceMs)
 	log.Printf("[Config] telemetry   : %s:%d command_port=%d", cfg.TelemetryHost, cfg.TelemetryPort, cfg.CommandPort)
 	log.Printf("[Config] delay       : %dms (applied to whichever resolution has annotation on)", cfg.DelayMs)
-	log.Printf("[Config] encode      : vp8 main=%dkbps lores=%dkbps jpeg_quality=%d fps live=%d annotated=%d",
-		cfg.VP8BitrateMainKbps, cfg.VP8BitrateLoresKbps, cfg.JPEGQuality, cfg.OutputFPSLive, cfg.OutputFPSAnnotated)
+	log.Printf("[Config] encode      : vp8 main high=%dkbps low=%dkbps lores=%dkbps jpeg_quality=%d fps live=%d annotated=%d",
+		cfg.VP8BitrateMainHighKbps, cfg.VP8BitrateMainLowKbps, cfg.VP8BitrateLoresKbps, cfg.JPEGQuality, cfg.OutputFPSLive, cfg.OutputFPSAnnotated)
 	log.Printf("[Config] webrtc      : ice_ports=%d-%d", cfg.ICEPortMin, cfg.ICEPortMax)
 	log.Printf("[Config] annotate    : main=%v lores=%v", cfg.AnnotateMain, cfg.AnnotateLores)
 	log.Printf("[Config] osd         : camera_id=%v time=%v", cfg.OSDCameraID, cfg.OSDTime)
@@ -257,8 +253,7 @@ func runMainLoop(
 	detBuf *detect.Buffer,
 	mainMailbox, loresMailbox *rawframe.Mailbox,
 	mainDelayBuf, loresDelayBuf *delaybuffer.DelayBuffer,
-	mainEncoder, loresEncoder *vp8.Encoder,
-	mainEncodeWidth, mainEncodeHeight int,
+	mainEncoderHigh, mainEncoderLow, loresEncoder *vp8.Encoder,
 ) {
 	liveIntervalUs := fpsIntervalUs(cfg.OutputFPSLive)
 	annotIntervalUs := fpsIntervalUs(cfg.OutputFPSAnnotated)
@@ -274,7 +269,8 @@ func runMainLoop(
 		var newestTsUs int64
 		var matchedThisTick uint64
 
-		total, mainClients, loresClients := srv.ClientCounts()
+		total, mainHighClients, mainLowClients, loresClients := srv.ClientCounts()
+		mainClients := mainHighClients + mainLowClients
 
 		mainAnnotated := srv.MainAnnotated.Load()
 		loresAnnotated := srv.LoresAnnotated.Load()
@@ -299,36 +295,47 @@ func runMainLoop(
 				frame, haveFrame = mainMailbox.Get()
 			}
 			if haveFrame && len(frame.Data) > 0 {
-				// Downscale from the camera's native capture resolution
-				// to the capped web-display resolution before drawing
-				// any overlay, so burned-in text/boxes stay crisp at the
-				// final displayed size rather than being blurred by the
-				// scale operation. Recording/snapshots never go through
-				// this path, so they keep full native resolution.
-				data := imgscale.DownscaleI420(append([]byte(nil), frame.Data...),
-					frame.Width, frame.Height, mainEncodeWidth, mainEncodeHeight)
+				// Native resolution, no downscale — recording/snapshots
+				// already ran at full native resolution unconditionally;
+				// now the live view does too. The copy is still needed
+				// since annotate below mutates in place and frame.Data
+				// is shared with the mailbox/delay buffer.
+				data := append([]byte(nil), frame.Data...)
 				if mainAnnotated {
 					if evt, ok := detBuf.FindNearest(frame.TimestampUs, toleranceUs); ok {
-						annotate.DrawDetections(data, mainEncodeWidth, mainEncodeHeight, evt.Detections)
+						annotate.DrawDetections(data, frame.Width, frame.Height, evt.Detections)
 						matchedThisTick++
 					}
 				}
 				if srv.OSDCameraID.Load() || srv.OSDTime.Load() {
-					annotate.DrawOSD(data, mainEncodeWidth, mainEncodeHeight, frame.TimestampUs,
+					annotate.DrawOSD(data, frame.Width, frame.Height, frame.TimestampUs,
 						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
 						srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
-				forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMain)
+				// Only encode a tier that currently has at least one
+				// client — on a Pi 5 two simultaneous native-resolution
+				// VP8 encodes is affordable, but there's still no reason
+				// to spend either one on a tier nobody's watching.
 				encStart := time.Now()
-				vp8Bytes, err := mainEncoder.Encode(data, frame.TimestampUs, forceKf)
-				if encDur := time.Since(encStart); encDur.Microseconds() > mainInterval {
-					log.Printf("[VP8] main encode took %v, longer than the %v tick interval — "+
-						"falling behind real time", encDur, time.Duration(mainInterval)*time.Microsecond)
+				if mainHighClients > 0 {
+					forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMainHigh)
+					if vp8Bytes, err := mainEncoderHigh.Encode(data, frame.TimestampUs, forceKf); err != nil {
+						log.Printf("[VP8] main-high encode error: %v", err)
+					} else if len(vp8Bytes) > 0 {
+						srv.Broadcast(webrtcsrv.StreamMainHigh, vp8Bytes, now.Sub(lastMain))
+					}
 				}
-				if err != nil {
-					log.Printf("[VP8] main encode error: %v", err)
-				} else if len(vp8Bytes) > 0 {
-					srv.Broadcast(webrtcsrv.StreamMain, vp8Bytes, now.Sub(lastMain))
+				if mainLowClients > 0 {
+					forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMainLow)
+					if vp8Bytes, err := mainEncoderLow.Encode(data, frame.TimestampUs, forceKf); err != nil {
+						log.Printf("[VP8] main-low encode error: %v", err)
+					} else if len(vp8Bytes) > 0 {
+						srv.Broadcast(webrtcsrv.StreamMainLow, vp8Bytes, now.Sub(lastMain))
+					}
+				}
+				if encDur := time.Since(encStart); encDur.Microseconds() > mainInterval {
+					log.Printf("[VP8] main encode (both tiers) took %v, longer than the %v tick interval — "+
+						"falling behind real time", encDur, time.Duration(mainInterval)*time.Microsecond)
 				}
 				lastMain = now
 				didWork = true

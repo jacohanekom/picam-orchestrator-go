@@ -31,7 +31,7 @@ func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug frame endpoint disabled"})
 		return
 	}
-	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
+	stream := ParseStream(r.URL.Query().Get("stream"), StreamMainHigh)
 	jpg, ok := s.cfg.DebugFrameJPEG(stream)
 	if !ok || len(jpg) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
@@ -55,7 +55,7 @@ func (s *Server) handleDebugFrameRaw(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug raw endpoint disabled"})
 		return
 	}
-	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
+	stream := ParseStream(r.URL.Query().Get("stream"), StreamMainHigh)
 	data, fw, fh, ok := s.cfg.DebugFrameRaw(stream)
 	if !ok || len(data) == 0 {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no frame available yet"})
@@ -107,7 +107,7 @@ func parseBoolParam(v string) (val bool, present bool) {
 // echoes the stream name for client/UI sync; real per-client stream
 // selection happens via the offer's own ?stream= param.
 func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
-	stream := ParseStream(r.URL.Query().Get("stream"), StreamMain)
+	stream := ParseStream(r.URL.Query().Get("stream"), StreamMainHigh)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stream": stream.String()})
 }
 
@@ -173,7 +173,7 @@ func round1(v float32) float64 {
 
 // handleStatusJSON implements GET /status.json.
 func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
-	total, mainClients, loresClients := s.ClientCounts()
+	total, mainHigh, mainLow, loresClients := s.ClientCounts()
 	snap := s.status.Snapshot()
 	tel := s.telemetry.Snapshot()
 
@@ -185,8 +185,10 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 		"main_annotated":    s.MainAnnotated.Load(),
 		"frame_ts_us":       snap.LatestFrameTsUs,
 		"streams": map[string]int{
-			"main":  mainClients,
-			"lores": loresClients,
+			"main":      mainHigh + mainLow,
+			"main_high": mainHigh,
+			"main_low":  mainLow,
+			"lores":     loresClients,
 		},
 		"telemetry": map[string]any{
 			"connected":     tel.Connected,

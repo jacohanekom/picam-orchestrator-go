@@ -36,13 +36,10 @@ type answerResponse struct {
 // a bug in this glue code must still not be able to take down the other
 // (up to 49) connected clients.
 //
-// maxStream is the ceiling quality this client may reach — the client's
-// track/broadcast subscription can be adjusted downward from it live in
-// response to connection quality (see Client.adaptQuality), but never
-// above it, so an overview/thumbnail request for "lores" stays pinned
-// there while a "main" detail-view request can range between lores and
-// main.
-func (s *Server) negotiate(offerSDP string, maxStream StreamSource) (answerSDP string, err error) {
+// stream is the exact broadcast this client relays for the life of the
+// connection — flat and pinned, no server-side adaptation (see
+// StreamSource's doc comment for why).
+func (s *Server) negotiate(offerSDP string, stream StreamSource) (answerSDP string, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("panic in webrtc negotiation: %v", p)
@@ -60,7 +57,7 @@ func (s *Server) negotiate(offerSDP string, maxStream StreamSource) (answerSDP s
 
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
-		"video", "picam-"+maxStream.String(),
+		"video", "picam-"+stream.String(),
 	)
 	if err != nil {
 		pc.Close()
@@ -73,7 +70,7 @@ func (s *Server) negotiate(offerSDP string, maxStream StreamSource) (answerSDP s
 		return "", err
 	}
 
-	client := newClient(pc, track, sender, maxStream)
+	client := newClient(pc, track, sender, stream)
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		switch state {
@@ -123,9 +120,9 @@ func (s *Server) negotiate(offerSDP string, maxStream StreamSource) (answerSDP s
 	return final.SDP, nil
 }
 
-// handleOffer implements POST /webrtc/offer?stream=main|lores.
+// handleOffer implements POST /webrtc/offer?stream=main|main-low|lores.
 func (s *Server) handleOffer(w http.ResponseWriter, r *http.Request) {
-	if total, _, _ := s.ClientCounts(); total >= s.cfg.MaxClients {
+	if total, _, _, _ := s.ClientCounts(); total >= s.cfg.MaxClients {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "too many connections"})
 		return
 	}

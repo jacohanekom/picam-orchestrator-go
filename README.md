@@ -2,6 +2,8 @@
 
 A from-scratch Go reimplementation of [`picam-orchestrator`](../picam-orchestrator) — a headless WebRTC streaming backend for Raspberry Pi camera systems. Receives raw YUV420 video from `picam-raw` and object detection data from `picam-hailo`, then encodes to VP8 and streams annotated or live video over WebRTC. Same wire protocols, config file format, and HTTP/TCP endpoint surface as the original C++ implementation — see that project's README for the full protocol-level rationale; this one focuses on what's specific to the Go port.
 
+Main streams at its native capture resolution (no downscale) as two simultaneous, independently-bitrated VP8 encodes of the same frame — `main-high`/`main-low` — so `picam-frontend` can move a struggling browser viewer to a lower bitrate without ever dropping below native resolution (see [Architecture](#architecture)). Lores is unrelated to that — a third, always-available, always-native-lores-resolution stream, used unconditionally for grid-view overview thumbnails regardless of connection quality. This process itself does no adaptation: every stream it serves is flat and pinned to whatever a client explicitly requested for the life of that connection — real connection-quality adaptation lives one hop further out, in `picam-frontend`, which has the actual variable-quality link (browser↔frontend); this process's own link to `picam-frontend` is LAN-only and effectively always clean.
+
 ## Why a Go port
 
 The original C++ implementation vendors [libdatachannel](https://github.com/paullouisageneau/libdatachannel) via CMake `FetchContent` (needs network access at configure time) and links `libssl`/`libjpeg`/`libvpx`. This port instead uses:
@@ -85,12 +87,12 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /webrtc/offer?stream=main\|lores` | WHEP-style signaling — body `{"sdp":"..."}` (SDP offer), response `{"sdp":"..."}` (SDP answer) |
-| `/status.json` | Pipeline stats, FPS, client count, telemetry |
-| `/annotate?main=true\|false&lores=true\|false` | Toggle delayed+annotated mode per resolution |
+| `POST /webrtc/offer?stream=main\|main-low\|lores` | WHEP-style signaling — body `{"sdp":"..."}` (SDP offer), response `{"sdp":"..."}` (SDP answer). Flat/pinned: whichever stream is requested is what that connection gets for its whole lifetime, no server-side adaptation (`main` is a friendly alias for `main-high`). |
+| `/status.json` | Pipeline stats, FPS, client count (broken down into `main`/`main_high`/`main_low`/`lores`), telemetry |
+| `/annotate?main=true\|false&lores=true\|false` | Toggle delayed+annotated mode per resolution (applies to both main tiers together) |
 | `/osd?camera_id=true\|false&time=true\|false` | Toggle OSD overlays at runtime |
 | `/camera?id=N` | Switch active camera (proxied to picam-raw) |
-| `/select?stream=main\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
+| `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
 
 `/webrtc/offer` is meant to be called by `picam-frontend`, not a browser directly. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
 
@@ -116,12 +118,14 @@ echo status | nc <pi-ip> 8091
 ## Architecture
 
 ```
-picam-raw  ─────(UDP YUV420)────► picam-orchestrator ──(WebRTC/VP8)──► picam-frontend ──► browsers
+picam-raw  ─────(UDP YUV420)────► picam-orchestrator ──(WebRTC/VP8: main-high, main-low, lores)──► picam-frontend ──► browsers
 picam-hailo ────(TCP JSON)──────►        │
 picam-recorder ◄──(TCP control)──────────┤
                                          ▼
                             POST /webrtc/offer (WHEP-style signaling)
 ```
+
+picam-frontend maintains up to three separate upstream WebRTC connections per Pi (`main-high`, `main-low`, `lores`), lazily establishing only the ones a currently-connected browser actually needs, and moves each browser viewer between `main-high`/`main-low` based on that viewer's own downstream connection quality — see picam-frontend-go's README for that side of the adaptation.
 
 ### Package layout
 
@@ -144,7 +148,7 @@ picam-recorder ◄──(TCP control)──────────┤
 
 ### Threading model
 
-Each network-facing component (`rawframe.Receiver`, `detect.Run`, `telemetry.Run`, `recorder.EventRecorder`) runs on its own goroutine(s), all cancelled via a single `context.Context` cancelled on SIGINT/SIGTERM (`signal.NotifyContext`). The two `vp8.Encoder` instances (one per resolution) are stateful and driven serially by the single main-loop goroutine — never called concurrently, matching VP8's inter-frame prediction requirement. The WebRTC client list (`webrtcsrv.Server.clients`) is a copy-on-write `atomic.Pointer[[]*Client]`: the hot per-tick broadcast path does a single atomic load and never takes a lock, while register/prune (rare) rebuild and atomically publish a fresh slice. Each client has its own small buffered channel + writer goroutine feeding `TrackLocalStaticSample.WriteSample`, so one slow/stalled client can't block the encoder or any other client.
+Each network-facing component (`rawframe.Receiver`, `detect.Run`, `telemetry.Run`, `recorder.EventRecorder`) runs on its own goroutine(s), all cancelled via a single `context.Context` cancelled on SIGINT/SIGTERM (`signal.NotifyContext`). The three `vp8.Encoder` instances (`main-high`, `main-low`, `lores`) are stateful and driven serially by the single main-loop goroutine — never called concurrently, matching VP8's inter-frame prediction requirement; a main tier is only encoded on ticks where it currently has at least one client. The WebRTC client list (`webrtcsrv.Server.clients`) is a copy-on-write `atomic.Pointer[[]*Client]`: the hot per-tick broadcast path does a single atomic load and never takes a lock, while register/prune (rare) rebuild and atomically publish a fresh slice. Each client has its own small buffered channel + writer goroutine feeding `TrackLocalStaticSample.WriteSample`, so one slow/stalled client can't block the encoder or any other client. Unlike an earlier version of this server, a `Client`'s stream is fixed at connect time and never adapted server-side — see the top of the README for why.
 
 ### Known, intentionally-preserved quirks
 

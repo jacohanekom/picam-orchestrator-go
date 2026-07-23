@@ -25,31 +25,25 @@ type Client struct {
 	track  *webrtc.TrackLocalStaticSample
 	sender *webrtc.RTPSender
 
-	// maxStream is the best quality this client may ever be raised to,
-	// fixed at connect time from the WebRTC offer's ?stream= param.
-	// Overview/thumbnail clients request "lores" and are pinned there —
-	// readRTCP's adaptQuality skips them entirely, so they never adapt.
-	// Detail-view clients request "main" and range between StreamLores
-	// (floor) and StreamMain (ceiling) based on measured packet loss.
-	maxStream StreamSource
-
-	// stream is which broadcast this client is CURRENTLY relaying —
-	// mutable, adjusted live by adaptQuality() in response to RTCP
-	// packet-loss feedback (see readRTCP). Stored as int32 so it can be
-	// read lock-free from the hot Broadcast/ConsumeForceKeyframe path
-	// (encode-loop goroutine) while written from readRTCP's goroutine.
-	stream atomic.Int32
+	// stream is which broadcast this client relays, fixed for the whole
+	// connection's lifetime — picked by the client itself (via the
+	// offer's ?stream= param) and never adapted server-side. Real
+	// connection-quality adaptation happens one hop further out, on the
+	// browser↔picam-frontend leg (picam-frontend's own relay.viewer),
+	// since the leg this server sees is LAN-only and effectively always
+	// clean — see StreamSource's doc comment.
+	stream StreamSource
 
 	alive         atomic.Bool
 	forceKeyframe atomic.Bool
 
 	// Diagnostics for a dropped-frame theory: if the encode loop outruns
-	// this client's consumption (e.g. main's ~13x larger frames vs.
-	// lores under real-time CPU pressure), Broadcast silently drops
-	// samples rather than blocking. VP8 is predictive, so a dropped
-	// delta frame breaks every subsequent frame's reference chain until
-	// the next keyframe — which would look exactly like sustained
-	// on-screen corruption rather than a one-frame glitch.
+	// this client's consumption (e.g. main's much larger frames under
+	// real-time CPU pressure), Broadcast silently drops samples rather
+	// than blocking. VP8 is predictive, so a dropped delta frame breaks
+	// every subsequent frame's reference chain until the next keyframe —
+	// which would look exactly like sustained on-screen corruption
+	// rather than a one-frame glitch.
 	droppedFrames  atomic.Uint64
 	lastDropLogged atomic.Int64 // UnixNano; 0 = never logged
 	lastKfForced   atomic.Int64 // UnixNano of last PLI-honored keyframe; rate-limits PLI storms
@@ -59,38 +53,30 @@ type Client struct {
 	// synchronous OS write once the connection is up (unlike
 	// libdatachannel, pion does not dispatch to its own internal I/O
 	// goroutines) — without this, one slow/stuck client could stall
-	// delivery to the encoder or every other client. Sized to 8 (was 4)
-	// to absorb a transient encode-time spike on the CPU-heavy main
-	// stream without dropping — still small enough that a genuinely
-	// stuck client fills it and starts dropping within one second at
-	// typical live FPS, so this doesn't mask a truly wedged client.
+	// delivery to the encoder or every other client. Sized to 8 to
+	// absorb a transient encode-time spike on the CPU-heavy main stream
+	// without dropping — still small enough that a genuinely stuck
+	// client fills it and starts dropping within one second at typical
+	// live FPS, so this doesn't mask a truly wedged client.
 	sendCh   chan sampleJob
 	done     chan struct{}
 	doneOnce sync.Once
 }
 
-func newClient(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticSample, sender *webrtc.RTPSender, maxStream StreamSource) *Client {
+func newClient(pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticSample, sender *webrtc.RTPSender, stream StreamSource) *Client {
 	c := &Client{
-		pc:        pc,
-		track:     track,
-		sender:    sender,
-		maxStream: maxStream,
-		sendCh:    make(chan sampleJob, 8),
-		done:      make(chan struct{}),
+		pc:     pc,
+		track:  track,
+		sender: sender,
+		stream: stream,
+		sendCh: make(chan sampleJob, 8),
+		done:   make(chan struct{}),
 	}
-	c.stream.Store(int32(maxStream)) // optimistic start at the requested ceiling; adaptQuality downgrades if the connection can't sustain it
 	c.alive.Store(true)
 	c.forceKeyframe.Store(true) // a fresh subscriber always gets a keyframe first
 	go c.writePump()
 	go c.readRTCP()
 	return c
-}
-
-// currentStream returns which broadcast this client is presently
-// relaying (may differ from maxStream if adaptQuality has downgraded
-// it).
-func (c *Client) currentStream() StreamSource {
-	return StreamSource(c.stream.Load())
 }
 
 func (c *Client) writePump() {
@@ -105,10 +91,8 @@ func (c *Client) writePump() {
 }
 
 // readRTCP watches RTCP feedback from the remote peer: PLI (picture
-// loss indication) triggers a forced keyframe, and Receiver Reports
-// drive adaptive quality (see adaptQuality). It exits on its own once
-// the sender/PeerConnection is closed (ReadRTCP then returns an
-// error).
+// loss indication) triggers a forced keyframe. It exits on its own once
+// the sender/PeerConnection is closed (ReadRTCP then returns an error).
 //
 // PLIs are rate-limited to at most one honored keyframe per pliMinInterval.
 // Without this, a large main-stream keyframe that loses even one RTP
@@ -120,34 +104,9 @@ func (c *Client) writePump() {
 // only bites the main stream because only its keyframes are big enough to
 // routinely lose a packet. Ignoring redundant PLIs lets the encoder keep
 // producing normal frames between keyframe attempts.
-//
-// lossEMA and lastSwitch are local to this single goroutine (readRTCP is
-// the only reader/writer of Receiver Report state), so they need no
-// synchronization — only the resulting c.stream write needs to be
-// atomic, since Broadcast/ConsumeForceKeyframe read it from the
-// encode-loop goroutine.
 func (c *Client) readRTCP() {
-	const (
-		pliMinInterval = 2 * time.Second
-
-		// EMA smoothing: how much weight each new Receiver Report gets.
-		// Receiver Reports arrive every few seconds, so this reacts
-		// within a couple of reports without being knocked around by one
-		// noisy sample.
-		lossEMAAlpha = 0.4
-
-		// Hysteresis: downgrade readily (8% sustained loss is already a
-		// visibly struggling connection), but only upgrade back once
-		// loss is nearly clean, and never within switchCooldown of the
-		// last switch — without this gap, a connection hovering right at
-		// the boundary would flap between resolutions every report.
-		downgradeLossThreshold = 0.08
-		upgradeLossThreshold   = 0.01
-		switchCooldown         = 8 * time.Second
-	)
+	const pliMinInterval = 2 * time.Second
 	var pliSuppressed uint64
-	lossEMA := -1.0 // negative sentinel: no sample yet
-	var lastSwitch time.Time
 
 	for {
 		pkts, _, err := c.sender.ReadRTCP()
@@ -155,59 +114,22 @@ func (c *Client) readRTCP() {
 			return
 		}
 		for _, p := range pkts {
-			switch pkt := p.(type) {
-			case *rtcp.PictureLossIndication:
-				now := time.Now().UnixNano()
-				last := c.lastKfForced.Load()
-				if now-last >= int64(pliMinInterval) && c.lastKfForced.CompareAndSwap(last, now) {
-					c.forceKeyframe.Store(true)
-					if pliSuppressed > 0 {
-						log.Printf("[WebRTC] %s client: forced keyframe on PLI (%d redundant PLIs suppressed since last)",
-							c.currentStream(), pliSuppressed)
-						pliSuppressed = 0
-					}
-				} else {
-					pliSuppressed++
+			if _, ok := p.(*rtcp.PictureLossIndication); !ok {
+				continue
+			}
+			now := time.Now().UnixNano()
+			last := c.lastKfForced.Load()
+			if now-last >= int64(pliMinInterval) && c.lastKfForced.CompareAndSwap(last, now) {
+				c.forceKeyframe.Store(true)
+				if pliSuppressed > 0 {
+					log.Printf("[WebRTC] %s client: forced keyframe on PLI (%d redundant PLIs suppressed since last)",
+						c.stream, pliSuppressed)
+					pliSuppressed = 0
 				}
-
-			case *rtcp.ReceiverReport:
-				if c.maxStream == StreamLores {
-					continue // pinned floor client (e.g. an overview thumbnail) — no ladder to adapt
-				}
-				for _, rr := range pkt.Reports {
-					frac := float64(rr.FractionLost) / 256.0
-					if lossEMA < 0 {
-						lossEMA = frac
-					} else {
-						lossEMA = lossEMA*(1-lossEMAAlpha) + frac*lossEMAAlpha
-					}
-				}
-				c.adaptQuality(lossEMA, &lastSwitch, downgradeLossThreshold, upgradeLossThreshold, switchCooldown)
+			} else {
+				pliSuppressed++
 			}
 		}
-	}
-}
-
-// adaptQuality switches this client between StreamMain and StreamLores
-// based on a smoothed packet-loss estimate (see readRTCP), forcing a
-// keyframe on the new stream so the client's decoder gets a clean start
-// rather than referencing frames from the stream it just left.
-func (c *Client) adaptQuality(lossEMA float64, lastSwitch *time.Time, downThresh, upThresh float64, cooldown time.Duration) {
-	now := time.Now()
-	if now.Sub(*lastSwitch) < cooldown {
-		return
-	}
-	switch current := c.currentStream(); {
-	case current == StreamMain && lossEMA > downThresh:
-		c.stream.Store(int32(StreamLores))
-		c.forceKeyframe.Store(true)
-		*lastSwitch = now
-		log.Printf("[WebRTC] client downgraded main->lores (loss=%.1f%%)", lossEMA*100)
-	case current == StreamLores && lossEMA < upThresh:
-		c.stream.Store(int32(StreamMain))
-		c.forceKeyframe.Store(true)
-		*lastSwitch = now
-		log.Printf("[WebRTC] client upgraded lores->main (loss=%.1f%%)", lossEMA*100)
 	}
 }
 

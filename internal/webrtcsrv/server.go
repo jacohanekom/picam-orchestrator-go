@@ -19,28 +19,47 @@ import (
 	"picam-orchestrator/internal/telemetry"
 )
 
-// StreamSource identifies one of the two independently configured
-// resolutions this process streams.
+// StreamSource identifies one of the streams this process broadcasts:
+// two independently-bitrated encodes of the native-resolution main feed
+// (StreamMainHigh/StreamMainLow — picam-frontend picks between them per
+// browser viewer based on that viewer's own downstream connection
+// quality; see internal/relay.viewer.adaptQuality in picam-frontend-go),
+// plus the always-available lores feed used for grid-view thumbnails
+// (unrelated to connection quality — always requested unconditionally).
+// Every stream here is flat/pinned: a client requests exactly one and
+// keeps it for the life of the connection. There is deliberately no
+// server-side adaptation at this layer — the frontend↔orchestrator link
+// is LAN-only and effectively always clean, so the connection whose
+// quality is actually worth reacting to is the browser↔frontend leg,
+// one hop further out, which is where the real adaptation lives.
 type StreamSource int
 
 const (
-	StreamMain StreamSource = iota
+	StreamMainHigh StreamSource = iota
+	StreamMainLow
 	StreamLores
 )
 
 func (s StreamSource) String() string {
-	if s == StreamLores {
+	switch s {
+	case StreamMainLow:
+		return "main-low"
+	case StreamLores:
 		return "lores"
+	default:
+		return "main"
 	}
-	return "main"
 }
 
-// ParseStream parses a "main"/"lores" query-param value, returning def
-// for anything else (including empty/absent).
+// ParseStream parses a "main"/"main-low"/"lores" query-param value,
+// returning def for anything else (including empty/absent). "main" is
+// kept as a friendly alias for "main-high", the ceiling tier.
 func ParseStream(s string, def StreamSource) StreamSource {
 	switch s {
-	case "main":
-		return StreamMain
+	case "main", "main-high":
+		return StreamMainHigh
+	case "main-low":
+		return StreamMainLow
 	case "lores":
 		return StreamLores
 	default:
@@ -153,18 +172,18 @@ func (s *Server) Stop(ctx context.Context) {
 }
 
 // ClientCounts returns the current live client counts, in one pass.
-// Counted by currentStream (which adaptQuality may have moved away from
-// the client's requested maxStream), since that's what determines which
-// encoder's output this client actually needs right now.
-func (s *Server) ClientCounts() (total, main, lores int) {
+func (s *Server) ClientCounts() (total, mainHigh, mainLow, lores int) {
 	for _, c := range *s.clients.Load() {
 		if !c.alive.Load() {
 			continue
 		}
 		total++
-		if c.currentStream() == StreamMain {
-			main++
-		} else {
+		switch c.stream {
+		case StreamMainHigh:
+			mainHigh++
+		case StreamMainLow:
+			mainLow++
+		default:
 			lores++
 		}
 	}
@@ -177,7 +196,7 @@ func (s *Server) ClientCounts() (total, main, lores int) {
 func (s *Server) ConsumeForceKeyframe(stream StreamSource) bool {
 	any := false
 	for _, c := range *s.clients.Load() {
-		if !c.alive.Load() || c.currentStream() != stream {
+		if !c.alive.Load() || c.stream != stream {
 			continue
 		}
 		if c.forceKeyframe.Swap(false) {
@@ -193,7 +212,7 @@ func (s *Server) ConsumeForceKeyframe(stream StreamSource) bool {
 // loop or any other client.
 func (s *Server) Broadcast(stream StreamSource, vp8 []byte, dur time.Duration) {
 	for _, c := range *s.clients.Load() {
-		if !c.alive.Load() || c.currentStream() != stream {
+		if !c.alive.Load() || c.stream != stream {
 			continue
 		}
 		select {
