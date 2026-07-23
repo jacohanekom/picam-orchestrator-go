@@ -279,8 +279,11 @@ func Load(path string) (*Config, error) {
 		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 12),
 		VP8CPUUsedLores: r.int("encode.vp8_cpu_used_lores", 8),
 		JPEGQuality:     r.int("encode.jpeg_quality", 80),
-		OutputFPSLive:       r.int("encode.output_fps_live", 15),
-		OutputFPSAnnotated:  r.int("encode.output_fps_annotated", 30),
+		// OutputFPSLive matches picam-raw's own capture rate: this is
+		// the zero-added-latency default view, so it's the one that
+		// should actually be real time.
+		OutputFPSLive:      r.int("encode.output_fps_live", 30),
+		OutputFPSAnnotated: r.int("encode.output_fps_annotated", 30),
 
 		ICEPortMin: r.int("webrtc.ice_port_min", 50000),
 		ICEPortMax: r.int("webrtc.ice_port_max", 50100),
