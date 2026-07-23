@@ -1,18 +1,17 @@
-# Builds the picam-orchestrator Debian package for arm64, using a real
-# arm64 Docker daemon (e.g. colima on Apple Silicon, which runs a
+# Builds the picam-orchestrator Debian package NATIVELY for arm64, using
+# a real arm64 Docker daemon (e.g. colima on Apple Silicon, which runs a
 # genuine arm64 Linux VM — no QEMU emulation involved despite the host
 # being a Mac). Same approach as the sibling picam-raw/picam-hailo
 # projects' Dockerfile.native-arm64 — see those files' headers for why
-# native beats cross-compiling for THEM in general (avoids apt ever
-# having to mix two architectures' packages at once).
+# native beats cross-compiling here in general (avoids apt ever having
+# to mix two architectures' packages at once, which is what actually
+# blocked picam-raw's cross-build attempt).
 #
-# picam-orchestrator itself no longer has that constraint: it's pure Go
-# (CGO_ENABLED=0, no cgo/libvpx dependency since the VP8/WebRTC encoder
-# was replaced with MJPEG-over-HTTP — see internal/mjpegsrv), so a plain
-# cross-build (GOARCH=arm64 go build, no cross C toolchain needed at
-# all) would work equally well. Kept as a native arm64 build anyway for
-# consistency with the sibling Dockerfiles and because it's already
-# proven to work.
+# For picam-orchestrator specifically, native also means the cgo build
+# against libvpx links against genuine native arm64 libvpx headers/libs —
+# no cross sysroot, no PKG_CONFIG_LIBDIR redirection, none of the
+# machinery Dockerfile.cross-arm64 (kept alongside this file) needs to
+# cross-compile from an amd64 host instead.
 #
 # Usage (from this directory, on a genuinely arm64 Docker host):
 #   docker build --platform linux/arm64 -f Dockerfile.native-arm64 -t picam-orchestrator-builder .
@@ -36,6 +35,8 @@ FROM golang:1.26-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         debhelper \
         devscripts \
+        pkg-config \
+        libvpx-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -55,7 +56,7 @@ COPY . .
 # timestamp separately.
 #
 # debian/rules already pins GOCACHE under the build tree and sets
-# CGO_ENABLED=0; -d (on dpkg-buildpackage) skips dpkg-checkbuilddeps'
+# CGO_ENABLED=1; -d (on dpkg-buildpackage) skips dpkg-checkbuilddeps'
 # check for the golang-go *package* specifically, since we supply Go via
 # this base image instead.
 RUN set -e; \

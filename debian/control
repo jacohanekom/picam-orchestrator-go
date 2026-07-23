@@ -3,24 +3,25 @@ Section: video
 Priority: optional
 Maintainer: Jaco Hanekom <jhanekom@gmail.com>
 Build-Depends: debhelper-compat (= 13),
-               golang-go (>= 2:1.22~)
+               golang-go (>= 2:1.22~),
+               pkg-config,
+               libvpx-dev
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 
 Package: picam-orchestrator
 Architecture: arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}, picam-raw, picam-hailo, aipicam-config
-Description: MJPEG stream + camera control backend for picam-raw + picam-hailo (Go)
- Headless backend exposing Main / Lores live video as plain HTTP MJPEG
- (multipart/x-mixed-replace) at GET /stream/main.mjpeg and
- GET /stream/lores.mjpeg — directly usable as an <img src="..."> in a
- browser, no signaling handshake needed — plus a JSON status endpoint
- (/status.json), an on-the-fly OSD toggle (/osd), a per-resolution
- annotation toggle (/annotate), and a camera-switch proxy to picam-raw
- (/camera?id=N). No web interface of its own, and typically not talked
- to by a browser directly — picam-frontend is the normal client,
- relaying the MJPEG stream on to browsers, though nothing stops a
- browser from pointing straight at this process's stream URLs. Main and
+Description: WebRTC (VP8) stream + camera control backend for picam-raw + picam-hailo (Go)
+ Headless backend exposing Main / Lores live video over WebRTC (VP8,
+ real inter-frame video). WHEP-style signaling at
+ POST /webrtc/offer?stream=main|lores (SDP offer in, SDP answer out),
+ plus a JSON status endpoint (/status.json), an on-the-fly OSD toggle
+ (/osd), a per-resolution annotation toggle (/annotate), and a
+ camera-switch proxy to picam-raw (/camera?id=N). No web interface of
+ its own, and never talks to a browser directly — picam-frontend is
+ the only client, relaying both signaling and media on to browsers.
+ Each connected client selects its stream independently. Main and
  Lores are live feeds straight from picam-raw; either can be switched
  into a delayed+annotated mode that matches detections from
  picam-hailo by timestamp and draws bounding boxes onto the delayed
@@ -28,16 +29,15 @@ Description: MJPEG stream + camera control backend for picam-raw + picam-hailo (
  JSON event-log files alongside recordings. Event snapshot files saved
  to disk are plain JPEG.
  .
- This is a Go reimplementation of the original C++ picam-orchestrator's
- detection/recording/control logic, though the live-stream transport
- has since diverged from that original: it started as WebRTC/VP8, which
- was replaced with MJPEG-over-HTTP because VP8 has no hardware encode
- path on any Raspberry Pi and software VP8 encoding was overloading the
- CPU — JPEG has no inter-frame prediction, so it's inherently far
- cheaper even in pure software. Pure Go, no cgo dependency.
+ This is a from-scratch Go reimplementation of the original C++
+ picam-orchestrator, with the same wire protocols, config file, and
+ HTTP/TCP endpoints — see its README for the full behavioral spec.
+ WebRTC is provided by the pure-Go pion/webrtc (no vendored
+ libdatachannel/OpenSSL build step); VP8 encoding uses cgo bindings to
+ the system libvpx.
  .
  Install picam-frontend on one machine to get a browser UI that can
- view, switch cameras, and toggle the OSD across multiple
+ view, switch streams/cameras, and toggle the OSD across multiple
  picam-orchestrator backends (e.g. several Pis) from one page.
  .
  Config: /etc/picam-orchestrator/config.ini
