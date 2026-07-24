@@ -89,9 +89,9 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 |----------|-------------|
 | `POST /webrtc/offer?stream=main\|main-low\|lores` | WHEP-style signaling — body `{"sdp":"..."}` (SDP offer), response `{"sdp":"..."}` (SDP answer). Flat/pinned: whichever stream is requested is what that connection gets for its whole lifetime, no server-side adaptation (`main` is a friendly alias for `main-high`). |
 | `/status.json` | Pipeline stats, FPS, client count (broken down into `main`/`main_high`/`main_low`/`lores`), telemetry |
-| `/annotate?main=true\|false&lores=true\|false` | Toggle delayed+annotated mode per resolution (applies to both main tiers together) |
-| `/osd?camera_id=true\|false&time=true\|false` | Toggle OSD overlays at runtime |
-| `/camera?id=N` | Switch active camera (proxied to picam-raw) |
+| `/annotate?main=true\|false&lores=true\|false` | Toggle delayed+annotated mode per resolution (applies to both main tiers together); persisted, see below |
+| `/osd?camera_id=true\|false&time=true\|false` | Toggle OSD overlays at runtime; persisted, see below |
+| `/camera?id=N` | Switch active camera (proxied to picam-raw); persisted, see below |
 | `/lux-switch?enabled=true\|false&threshold=N` | Configure automatic lens switching by ambient light — see below |
 | `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
 
@@ -123,7 +123,13 @@ echo status | nc <pi-ip> 8091
 
 `internal/luxswitch` runs a background loop that, when enabled, watches picam-raw's own lux telemetry and switches the active camera automatically — above the configured threshold uses camera 0, below it uses camera 1, with a deadband and a cooldown between switches so it doesn't flap right at the boundary. This is independent of any client: it keeps working correctly with no browser open, since the decision and the `/camera` RPC to picam-raw both happen inside this process.
 
-`enabled`/`threshold` start from `[lux_switch]` in `config.ini`, but a runtime change via `GET /lux-switch` is **persisted to disk** (`state_dir`, default `/var/lib/picam-orchestrator`) and takes priority over the config file on the next start — unlike `[osd]`/`[annotate]`, which are deliberately in-memory-only and always reset to their config.ini default on restart. `picam-frontend`'s sidebar is a remote control for this setting, not where the logic runs — see that project's README.
+`enabled`/`threshold` start from `[lux_switch]` in `config.ini`, but a runtime change via `GET /lux-switch` is **persisted to disk** (`state_dir`, default `/var/lib/picam-orchestrator`) and takes priority over the config file on the next start. `picam-frontend`'s sidebar is a remote control for this setting, not where the logic runs — see that project's README.
+
+### Persisted Settings-page state
+
+`internal/uistate` persists every other control on `picam-frontend`'s Settings page too — OSD overlay (`/osd`), annotation (`/annotate`), and the active camera lens (`/camera`) — the same way `internal/luxswitch` already persists auto-switch's own settings: a small JSON file under `[ui_state].state_dir` (default `/var/lib/picam-orchestrator/ui_state.json`), written on every successful change, read at startup ahead of `[osd]`/`[annotate]`'s own config.ini defaults.
+
+Unlike OSD/annotate (this process's own in-memory `atomic.Bool` fields, read on every encode tick — `uistate` is a write-through persistence side channel, never that hot-path source of truth), the active camera isn't something this process owns at all day-to-day: `/camera` just proxies to picam-raw, and picam-raw is the actual source of truth for which lens is live. So restoring it is a one-shot reconciliation at startup (`uistate.ReconcileActiveCamera`, launched as a background goroutine, up to a 30s wait for telemetry to connect): if a saved camera preference exists and picam-raw reports something different once telemetry connects, this process issues one `/camera`-equivalent RPC to restore it. In the common case — picam-raw's own hardware state didn't change just because this process restarted — this is a no-op.
 
 ### Automatic discovery by picam-frontend
 
@@ -152,6 +158,7 @@ picam-frontend maintains up to three separate upstream WebRTC connections per Pi
 | `internal/telemetry` | Lux/active-camera TCP receiver + shared state |
 | `internal/camrpc` | One-shot camera-switch TCP command to picam-raw |
 | `internal/luxswitch` | Automatic camera-lens switching by ambient light, persisted to disk |
+| `internal/uistate` | Persists OSD/annotate/lens Settings-page state to disk, restoring lens on startup |
 | `internal/discovery` | mDNS/DNS-SD advertisement so picam-frontend can find this Pi automatically |
 | `internal/recorder` | picam-recorder TCP control + detection-triggered recording orchestration |
 | `internal/annotate` | 5x7 bitmap font, Y-plane box/label drawing, OSD burn-in |

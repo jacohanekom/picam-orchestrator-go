@@ -18,6 +18,7 @@ import (
 	"picam-orchestrator/internal/luxswitch"
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/telemetry"
+	"picam-orchestrator/internal/uistate"
 )
 
 // StreamSource identifies one of the streams this process broadcasts:
@@ -117,10 +118,11 @@ type Server struct {
 	status    *pipestat.Status
 	telemetry *telemetry.State
 	luxSwitch *luxswitch.State
+	uiState   *uistate.State
 }
 
 // New builds a Server. Call Start to begin listening.
-func New(cfg Config, status *pipestat.Status, tel *telemetry.State, lux *luxswitch.State) (*Server, error) {
+func New(cfg Config, status *pipestat.Status, tel *telemetry.State, lux *luxswitch.State, ui *uistate.State) (*Server, error) {
 	se := webrtc.SettingEngine{}
 	if err := se.SetEphemeralUDPPortRange(cfg.ICEPortMin, cfg.ICEPortMax); err != nil {
 		return nil, fmt.Errorf("webrtcsrv: invalid ICE port range %d-%d: %w", cfg.ICEPortMin, cfg.ICEPortMax, err)
@@ -133,7 +135,7 @@ func New(cfg Config, status *pipestat.Status, tel *telemetry.State, lux *luxswit
 
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
 
-	s := &Server{cfg: cfg, api: api, status: status, telemetry: tel, luxSwitch: lux}
+	s := &Server{cfg: cfg, api: api, status: status, telemetry: tel, luxSwitch: lux, uiState: ui}
 	empty := []*Client{}
 	s.clients.Store(&empty)
 	return s, nil

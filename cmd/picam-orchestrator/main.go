@@ -31,6 +31,7 @@ import (
 	"picam-orchestrator/internal/snapshot"
 	"picam-orchestrator/internal/statussrv"
 	"picam-orchestrator/internal/telemetry"
+	"picam-orchestrator/internal/uistate"
 	"picam-orchestrator/internal/vp8"
 	"picam-orchestrator/internal/webrtcsrv"
 )
@@ -103,6 +104,10 @@ func main() {
 		filepath.Join(cfg.LuxSwitchStateDir, "lux_switch.json"),
 		cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold,
 	)
+	uiState := uistate.New(
+		filepath.Join(cfg.UIStateDir, "ui_state.json"),
+		cfg.OSDCameraID, cfg.OSDTime, cfg.AnnotateMain, cfg.AnnotateLores,
+	)
 
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
 		HTTPPort:        cfg.HTTPPort,
@@ -114,14 +119,19 @@ func main() {
 		MaxClients:      50,
 		DebugFrameJPEG:  debugFrameJPEG,
 		DebugFrameRaw:   debugFrameRaw,
-	}, status, telState, luxState)
+	}, status, telState, luxState, uiState)
 	if err != nil {
 		log.Fatalf("[WebRTC] %v", err)
 	}
-	srv.OSDCameraID.Store(cfg.OSDCameraID)
-	srv.OSDTime.Store(cfg.OSDTime)
-	srv.MainAnnotated.Store(cfg.AnnotateMain)
-	srv.LoresAnnotated.Store(cfg.AnnotateLores)
+	// Seeded from uiState's Snapshot (persisted value, if any, else the
+	// [osd]/[annotate] config.ini defaults uiState was constructed
+	// with) rather than cfg directly, so a prior runtime change survives
+	// this restart.
+	osdCameraID, osdTime, annotateMain, annotateLores, _ := uiState.Snapshot()
+	srv.OSDCameraID.Store(osdCameraID)
+	srv.OSDTime.Store(osdTime)
+	srv.MainAnnotated.Store(annotateMain)
+	srv.LoresAnnotated.Store(annotateLores)
 
 	// EventRecorder's snapshot callback: annotate a copy of the current
 	// live MAIN frame with the triggering event's boxes and JPEG-encode
@@ -218,6 +228,12 @@ func main() {
 	runBg(func() {
 		luxswitch.Run(ctx, luxState, telState, cfg.TelemetryHost, cfg.CommandPort)
 	})
+	// One-shot, not a loop like the Runs above: restores the last
+	// selected lens if it differs from whatever picam-raw reports once
+	// telemetry connects, then returns.
+	runBg(func() {
+		uistate.ReconcileActiveCamera(ctx, uiState, telState, cfg.TelemetryHost, cfg.CommandPort, 30*time.Second)
+	})
 	runBg(func() { evtRecorder.Run(ctx) })
 
 	srv.Start()
@@ -260,6 +276,7 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] osd         : camera_id=%v time=%v", cfg.OSDCameraID, cfg.OSDTime)
 	log.Printf("[Config] lux_switch  : enabled=%v threshold=%d state_dir=%s", cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold, cfg.LuxSwitchStateDir)
 	log.Printf("[Config] discovery   : enabled=%v name=%q label=%q", cfg.DiscoveryEnabled, cfg.DiscoveryName, cfg.DiscoveryLabel)
+	log.Printf("[Config] ui_state    : state_dir=%s", cfg.UIStateDir)
 	log.Printf("[Config] output      : http_port=%d status_port=%d default_stream=%s", cfg.HTTPPort, cfg.StatusPort, cfg.DefaultStream)
 	log.Printf("[Config] recorder    : %s:%d", cfg.RecorderHost, cfg.RecorderPort)
 }

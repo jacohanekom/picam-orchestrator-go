@@ -113,18 +113,27 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleOSD implements GET /osd?camera_id=<bool>&time=<bool>&enabled=<bool>.
+// A runtime change here is persisted (see internal/uistate) so it
+// survives a restart, unlike this handler's own atomic fields.
 func (s *Server) handleOSD(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	var cameraIDPtr, timePtr *bool
 	if v, ok := parseBoolParam(q.Get("enabled")); ok {
-		s.OSDCameraID.Store(v)
-		s.OSDTime.Store(v)
+		cameraIDPtr, timePtr = &v, &v
 	}
 	if v, ok := parseBoolParam(q.Get("camera_id")); ok {
-		s.OSDCameraID.Store(v)
+		cameraIDPtr = &v
 	}
 	if v, ok := parseBoolParam(q.Get("time")); ok {
-		s.OSDTime.Store(v)
+		timePtr = &v
 	}
+	if cameraIDPtr != nil {
+		s.OSDCameraID.Store(*cameraIDPtr)
+	}
+	if timePtr != nil {
+		s.OSDTime.Store(*timePtr)
+	}
+	s.uiState.SetOSD(cameraIDPtr, timePtr)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                true,
 		"camera_id_enabled": s.OSDCameraID.Load(),
@@ -132,15 +141,25 @@ func (s *Server) handleOSD(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAnnotate implements GET /annotate?lores=<bool>&main=<bool>.
+// handleAnnotate implements GET /annotate?lores=<bool>&main=<bool>. A
+// runtime change here is persisted (see internal/uistate) so it
+// survives a restart.
 func (s *Server) handleAnnotate(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	var mainPtr, loresPtr *bool
 	if v, ok := parseBoolParam(q.Get("lores")); ok {
-		s.LoresAnnotated.Store(v)
+		loresPtr = &v
 	}
 	if v, ok := parseBoolParam(q.Get("main")); ok {
-		s.MainAnnotated.Store(v)
+		mainPtr = &v
 	}
+	if loresPtr != nil {
+		s.LoresAnnotated.Store(*loresPtr)
+	}
+	if mainPtr != nil {
+		s.MainAnnotated.Store(*mainPtr)
+	}
+	s.uiState.SetAnnotate(mainPtr, loresPtr)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
 		"lores_annotated": s.LoresAnnotated.Load(),
@@ -149,7 +168,9 @@ func (s *Server) handleAnnotate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCamera implements GET /camera?id=<N>, proxying picam-raw's raw
-// JSON response through verbatim.
+// JSON response through verbatim. A successful switch is persisted
+// (see internal/uistate) so it's restored after a restart if picam-raw
+// itself reports something different by then.
 func (s *Server) handleCamera(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
 	if idStr == "" || strings.ContainsFunc(idStr, func(c rune) bool { return c < '0' || c > '9' }) {
@@ -159,6 +180,9 @@ func (s *Server) handleCamera(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.Atoi(idStr)
 
 	reached, resp := camrpc.SwitchCamera(s.cfg.PicamRawHost, s.cfg.PicamRawCmdPort, id)
+	if reached {
+		s.uiState.SetActiveCamera(id)
+	}
 	status := http.StatusOK
 	if !reached {
 		status = http.StatusBadGateway

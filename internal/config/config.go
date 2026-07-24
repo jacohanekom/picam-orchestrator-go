@@ -224,6 +224,13 @@ type Config struct {
 	DiscoveryName    string
 	DiscoveryLabel   string
 
+	// [ui_state] -- where OSD/annotate/lens settings changed via HTTP
+	// are persisted across a restart (see internal/uistate). Separate
+	// from [lux_switch].state_dir on purpose: every feature section
+	// owns its own state_dir key rather than sharing one, even though
+	// they default to the same directory today.
+	UIStateDir string
+
 	// [output]
 	HTTPPort      int
 	StatusPort    int
@@ -314,6 +321,8 @@ func Load(path string) (*Config, error) {
 		DiscoveryEnabled: r.boolean("discovery.enabled", true),
 		DiscoveryName:    r.str("discovery.name", ""),
 		DiscoveryLabel:   r.str("discovery.label", ""),
+
+		UIStateDir: r.str("ui_state.state_dir", "/var/lib/picam-orchestrator"),
 
 		HTTPPort:      r.int("output.http_port", 81),
 		StatusPort:    r.int("output.status_port", 8091),
