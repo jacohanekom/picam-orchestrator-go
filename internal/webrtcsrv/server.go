@@ -15,6 +15,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
+	"picam-orchestrator/internal/irlight"
 	"picam-orchestrator/internal/luxswitch"
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/telemetry"
@@ -119,10 +120,11 @@ type Server struct {
 	telemetry *telemetry.State
 	luxSwitch *luxswitch.State
 	uiState   *uistate.State
+	irLight   *irlight.State
 }
 
 // New builds a Server. Call Start to begin listening.
-func New(cfg Config, status *pipestat.Status, tel *telemetry.State, lux *luxswitch.State, ui *uistate.State) (*Server, error) {
+func New(cfg Config, status *pipestat.Status, tel *telemetry.State, lux *luxswitch.State, ui *uistate.State, ir *irlight.State) (*Server, error) {
 	se := webrtc.SettingEngine{}
 	if err := se.SetEphemeralUDPPortRange(cfg.ICEPortMin, cfg.ICEPortMax); err != nil {
 		return nil, fmt.Errorf("webrtcsrv: invalid ICE port range %d-%d: %w", cfg.ICEPortMin, cfg.ICEPortMax, err)
@@ -135,7 +137,7 @@ func New(cfg Config, status *pipestat.Status, tel *telemetry.State, lux *luxswit
 
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
 
-	s := &Server{cfg: cfg, api: api, status: status, telemetry: tel, luxSwitch: lux, uiState: ui}
+	s := &Server{cfg: cfg, api: api, status: status, telemetry: tel, luxSwitch: lux, uiState: ui, irLight: ir}
 	empty := []*Client{}
 	s.clients.Store(&empty)
 	return s, nil

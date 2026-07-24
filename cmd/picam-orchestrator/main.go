@@ -24,6 +24,7 @@ import (
 	"picam-orchestrator/internal/delaybuffer"
 	"picam-orchestrator/internal/detect"
 	"picam-orchestrator/internal/discovery"
+	"picam-orchestrator/internal/irlight"
 	"picam-orchestrator/internal/luxswitch"
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/rawframe"
@@ -108,6 +109,10 @@ func main() {
 		filepath.Join(cfg.UIStateDir, "ui_state.json"),
 		cfg.OSDCameraID, cfg.OSDTime, cfg.AnnotateMain, cfg.AnnotateLores,
 	)
+	irState := irlight.New(
+		filepath.Join(cfg.IRLightStateDir, "ir_light.json"),
+		cfg.IRLightEnabled, cfg.IRLightThreshold, cfg.IRLightMaxOnMinutes,
+	)
 
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
 		HTTPPort:        cfg.HTTPPort,
@@ -119,7 +124,7 @@ func main() {
 		MaxClients:      50,
 		DebugFrameJPEG:  debugFrameJPEG,
 		DebugFrameRaw:   debugFrameRaw,
-	}, status, telState, luxState, uiState)
+	}, status, telState, luxState, uiState, irState)
 	if err != nil {
 		log.Fatalf("[WebRTC] %v", err)
 	}
@@ -228,6 +233,9 @@ func main() {
 	runBg(func() {
 		luxswitch.Run(ctx, luxState, telState, cfg.TelemetryHost, cfg.CommandPort)
 	})
+	runBg(func() {
+		irlight.Run(ctx, irState, telState, cfg.IRLightRelayHost, cfg.IRLightRelayPort)
+	})
 	// One-shot, not a loop like the Runs above: restores the last
 	// selected lens if it differs from whatever picam-raw reports once
 	// telemetry connects, then returns.
@@ -275,6 +283,8 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] annotate    : main=%v lores=%v", cfg.AnnotateMain, cfg.AnnotateLores)
 	log.Printf("[Config] osd         : camera_id=%v time=%v", cfg.OSDCameraID, cfg.OSDTime)
 	log.Printf("[Config] lux_switch  : enabled=%v threshold=%d state_dir=%s", cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold, cfg.LuxSwitchStateDir)
+	log.Printf("[Config] ir_light    : enabled=%v threshold=%d max_on_minutes=%d relay=%s:%d state_dir=%s",
+		cfg.IRLightEnabled, cfg.IRLightThreshold, cfg.IRLightMaxOnMinutes, cfg.IRLightRelayHost, cfg.IRLightRelayPort, cfg.IRLightStateDir)
 	log.Printf("[Config] discovery   : enabled=%v name=%q label=%q", cfg.DiscoveryEnabled, cfg.DiscoveryName, cfg.DiscoveryLabel)
 	log.Printf("[Config] ui_state    : state_dir=%s", cfg.UIStateDir)
 	log.Printf("[Config] output      : http_port=%d status_port=%d default_stream=%s", cfg.HTTPPort, cfg.StatusPort, cfg.DefaultStream)

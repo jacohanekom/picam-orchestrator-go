@@ -27,6 +27,7 @@ Everything else — the UDP chunk-reassembly protocol, delay buffer, detection b
 - `picam-hailo` (detection TCP stream)
 - `picam-frontend` (the only WebRTC signaling/media client this process ever talks to)
 - `picam-recorder` (optional — only needed for detection-triggered recording)
+- `pi-relay-control` (optional, running locally on the same Pi — only needed for automatic IR-light relay control, see `[ir_light]`)
 
 ## Build
 
@@ -93,6 +94,7 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 | `/osd?camera_id=true\|false&time=true\|false` | Toggle OSD overlays at runtime; persisted, see below |
 | `/camera?id=N` | Switch active camera (proxied to picam-raw); persisted, see below |
 | `/lux-switch?enabled=true\|false&threshold=N` | Configure automatic lens switching by ambient light — see below |
+| `/ir-light?enabled=true\|false&threshold=N&max_on_minutes=N` | Configure automatic IR-illuminator control via relay — see below |
 | `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
 
 `/webrtc/offer` is meant to be called by `picam-frontend`, not a browser directly. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
@@ -115,6 +117,9 @@ curl http://<pi-ip>:81/camera?id=1
 # Enable auto lens switching at a lux threshold of 60
 curl http://<pi-ip>:81/lux-switch?enabled=true&threshold=60
 
+# Enable the IR light relay below 50 lux, capped at 30 continuous minutes
+curl http://<pi-ip>:81/ir-light?enabled=true&threshold=50&max_on_minutes=30
+
 # Check pipeline status (plaintext key=value)
 echo status | nc <pi-ip> 8091
 ```
@@ -124,6 +129,14 @@ echo status | nc <pi-ip> 8091
 `internal/luxswitch` runs a background loop that, when enabled, watches picam-raw's own lux telemetry and switches the active camera automatically — above the configured threshold uses camera 0, below it uses camera 1, with a deadband and a cooldown between switches so it doesn't flap right at the boundary. This is independent of any client: it keeps working correctly with no browser open, since the decision and the `/camera` RPC to picam-raw both happen inside this process.
 
 `enabled`/`threshold` start from `[lux_switch]` in `config.ini`, but a runtime change via `GET /lux-switch` is **persisted to disk** (`state_dir`, default `/var/lib/picam-orchestrator`) and takes priority over the config file on the next start. `picam-frontend`'s sidebar is a remote control for this setting, not where the logic runs — see that project's README.
+
+### Automatic infrared light by relay
+
+`internal/irlight` runs the same kind of background loop as `internal/luxswitch` (own deadband + cooldown, independent of any client), but drives a relay wired to an IR illuminator instead of switching cameras — below the configured threshold (dark) the relay turns on, above it (bright) it turns off. The relay itself is controlled via [`pi-relay-control`](../pi-relay-control), a small daemon assumed to be running **locally on this same Pi** (`[ir_light].relay_host`/`relay_port`, default `127.0.0.1:7778`) — `internal/relayrpc` speaks its plain-text one-shot TCP protocol (`on`/`off`), the same shape as `internal/camrpc`'s own picam-raw protocol.
+
+`max_on_minutes` caps how long the relay may stay continuously on, as a hardware safety limit independent of the lux reading. Once hit, the relay is forced off and **stays off for the rest of that dark period** — it only re-arms (allowed to turn on again) once lux rises back above the threshold (day) and then drops below it again, so a single dark session never gets more than one allotment. `0` disables the cap entirely.
+
+`enabled`/`threshold`/`max_on_minutes` start from `[ir_light]` in `config.ini`, but a runtime change via `GET /ir-light` is **persisted to disk** (`state_dir`, default `/var/lib/picam-orchestrator/ir_light.json`) the same way `[lux_switch]` is. `picam-frontend`'s Settings page is a remote control for this setting, not where the logic runs.
 
 ### Persisted Settings-page state
 
@@ -157,7 +170,9 @@ picam-frontend maintains up to three separate upstream WebRTC connections per Pi
 | `internal/detect` | Detection JSON types, timestamp-indexed buffer, TCP receiver |
 | `internal/telemetry` | Lux/active-camera TCP receiver + shared state |
 | `internal/camrpc` | One-shot camera-switch TCP command to picam-raw |
+| `internal/relayrpc` | One-shot on/off TCP command to pi-relay-control |
 | `internal/luxswitch` | Automatic camera-lens switching by ambient light, persisted to disk |
+| `internal/irlight` | Automatic IR-illuminator relay control by ambient light, persisted to disk |
 | `internal/uistate` | Persists OSD/annotate/lens Settings-page state to disk, restoring lens on startup |
 | `internal/discovery` | mDNS/DNS-SD advertisement so picam-frontend can find this Pi automatically |
 | `internal/recorder` | picam-recorder TCP control + detection-triggered recording orchestration |

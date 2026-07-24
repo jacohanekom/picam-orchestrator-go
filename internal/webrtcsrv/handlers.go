@@ -17,6 +17,7 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /annotate", s.handleAnnotate)
 	mux.HandleFunc("GET /camera", s.handleCamera)
 	mux.HandleFunc("GET /lux-switch", s.handleLuxSwitch)
+	mux.HandleFunc("GET /ir-light", s.handleIRLight)
 	mux.HandleFunc("GET /status.json", s.handleStatusJSON)
 	mux.HandleFunc("GET /debug/frame.jpg", s.handleDebugFrame)
 	mux.HandleFunc("GET /debug/frame.raw", s.handleDebugFrameRaw)
@@ -223,6 +224,48 @@ func (s *Server) handleLuxSwitch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleIRLight implements GET /ir-light?enabled=<bool>&threshold=<int>&max_on_minutes=<int>.
+// The actual lux-crossing evaluation and relay command runs in
+// internal/irlight's own background loop, not here -- this handler
+// only reads/updates its live configuration (persisted to disk by
+// irlight.State.Set, so it survives a restart).
+func (s *Server) handleIRLight(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	var enabledPtr *bool
+	if v, ok := parseBoolParam(q.Get("enabled")); ok {
+		enabledPtr = &v
+	}
+
+	var thresholdPtr *int
+	if raw := q.Get("threshold"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid threshold"})
+			return
+		}
+		thresholdPtr = &v
+	}
+
+	var maxOnMinutesPtr *int
+	if raw := q.Get("max_on_minutes"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid max_on_minutes"})
+			return
+		}
+		maxOnMinutesPtr = &v
+	}
+
+	enabled, threshold, maxOnMinutes := s.irLight.Set(enabledPtr, thresholdPtr, maxOnMinutesPtr)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                      true,
+		"ir_light_enabled":        enabled,
+		"ir_light_threshold":      threshold,
+		"ir_light_max_on_minutes": maxOnMinutes,
+	})
+}
+
 func round1(v float32) float64 {
 	return math.Round(float64(v)*10) / 10
 }
@@ -233,16 +276,20 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	snap := s.status.Snapshot()
 	tel := s.telemetry.Snapshot()
 	luxEnabled, luxThreshold := s.luxSwitch.Get()
+	irEnabled, irThreshold, irMaxOnMinutes := s.irLight.Get()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"clients":              total,
-		"camera_id_enabled":    s.OSDCameraID.Load(),
-		"time_enabled":         s.OSDTime.Load(),
-		"lores_annotated":      s.LoresAnnotated.Load(),
-		"main_annotated":       s.MainAnnotated.Load(),
-		"lux_switch_enabled":   luxEnabled,
-		"lux_switch_threshold": luxThreshold,
-		"frame_ts_us":          snap.LatestFrameTsUs,
+		"clients":                 total,
+		"camera_id_enabled":       s.OSDCameraID.Load(),
+		"time_enabled":            s.OSDTime.Load(),
+		"lores_annotated":         s.LoresAnnotated.Load(),
+		"main_annotated":          s.MainAnnotated.Load(),
+		"lux_switch_enabled":      luxEnabled,
+		"lux_switch_threshold":    luxThreshold,
+		"ir_light_enabled":        irEnabled,
+		"ir_light_threshold":      irThreshold,
+		"ir_light_max_on_minutes": irMaxOnMinutes,
+		"frame_ts_us":             snap.LatestFrameTsUs,
 		"streams": map[string]int{
 			"main":      mainHigh + mainLow,
 			"main_high": mainHigh,

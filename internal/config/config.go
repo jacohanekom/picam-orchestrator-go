@@ -219,6 +219,18 @@ type Config struct {
 	LuxSwitchThreshold int
 	LuxSwitchStateDir  string
 
+	// [ir_light] -- startup defaults only; the live enabled/threshold/
+	// max_on_minutes values are configured over HTTP (see webrtcsrv's
+	// /ir-light handler) and persisted to IRLightStateDir by
+	// internal/irlight, which overrides these on the next start if a
+	// persisted value exists.
+	IRLightEnabled      bool
+	IRLightThreshold    int
+	IRLightMaxOnMinutes int
+	IRLightRelayHost    string
+	IRLightRelayPort    int
+	IRLightStateDir     string
+
 	// [discovery]
 	DiscoveryEnabled bool
 	DiscoveryName    string
@@ -317,6 +329,13 @@ func Load(path string) (*Config, error) {
 		LuxSwitchEnabled:   r.boolean("lux_switch.enabled", false),
 		LuxSwitchThreshold: r.int("lux_switch.threshold", 50),
 		LuxSwitchStateDir:  r.str("lux_switch.state_dir", "/var/lib/picam-orchestrator"),
+
+		IRLightEnabled:      r.boolean("ir_light.enabled", false),
+		IRLightThreshold:    r.int("ir_light.threshold", 50),
+		IRLightMaxOnMinutes: r.int("ir_light.max_on_minutes", 0),
+		IRLightRelayHost:    r.str("ir_light.relay_host", "127.0.0.1"),
+		IRLightRelayPort:    r.int("ir_light.relay_port", 7778),
+		IRLightStateDir:     r.str("ir_light.state_dir", "/var/lib/picam-orchestrator"),
 
 		DiscoveryEnabled: r.boolean("discovery.enabled", true),
 		DiscoveryName:    r.str("discovery.name", ""),
