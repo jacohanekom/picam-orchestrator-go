@@ -92,6 +92,7 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 | `/annotate?main=true\|false&lores=true\|false` | Toggle delayed+annotated mode per resolution (applies to both main tiers together) |
 | `/osd?camera_id=true\|false&time=true\|false` | Toggle OSD overlays at runtime |
 | `/camera?id=N` | Switch active camera (proxied to picam-raw) |
+| `/lux-switch?enabled=true\|false&threshold=N` | Configure automatic lens switching by ambient light — see below |
 | `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
 
 `/webrtc/offer` is meant to be called by `picam-frontend`, not a browser directly. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
@@ -111,9 +112,18 @@ curl http://<pi-ip>:81/osd?time=true
 # Switch to camera 1
 curl http://<pi-ip>:81/camera?id=1
 
+# Enable auto lens switching at a lux threshold of 60
+curl http://<pi-ip>:81/lux-switch?enabled=true&threshold=60
+
 # Check pipeline status (plaintext key=value)
 echo status | nc <pi-ip> 8091
 ```
+
+### Automatic lens switching by ambient light
+
+`internal/luxswitch` runs a background loop that, when enabled, watches picam-raw's own lux telemetry and switches the active camera automatically — above the configured threshold uses camera 0, below it uses camera 1, with a deadband and a cooldown between switches so it doesn't flap right at the boundary. This is independent of any client: it keeps working correctly with no browser open, since the decision and the `/camera` RPC to picam-raw both happen inside this process.
+
+`enabled`/`threshold` start from `[lux_switch]` in `config.ini`, but a runtime change via `GET /lux-switch` is **persisted to disk** (`state_dir`, default `/var/lib/picam-orchestrator`) and takes priority over the config file on the next start — unlike `[osd]`/`[annotate]`, which are deliberately in-memory-only and always reset to their config.ini default on restart. `picam-frontend`'s sidebar is a remote control for this setting, not where the logic runs — see that project's README.
 
 ## Architecture
 

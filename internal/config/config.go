@@ -210,6 +210,15 @@ type Config struct {
 	OSDTime         bool
 	OSDCameraLabels []string
 
+	// [lux_switch] -- startup defaults only; the live enabled/threshold
+	// values are configured over HTTP (see webrtcsrv's /lux-switch
+	// handler) and persisted to LuxSwitchStateDir by internal/luxswitch,
+	// which overrides these on the next start if a persisted value
+	// exists.
+	LuxSwitchEnabled   bool
+	LuxSwitchThreshold int
+	LuxSwitchStateDir  string
+
 	// [output]
 	HTTPPort      int
 	StatusPort    int
@@ -292,6 +301,10 @@ func Load(path string) (*Config, error) {
 		OSDCameraID:     r.boolean("osd.camera_id", false),
 		OSDTime:         r.boolean("osd.time", false),
 		OSDCameraLabels: labels,
+
+		LuxSwitchEnabled:   r.boolean("lux_switch.enabled", false),
+		LuxSwitchThreshold: r.int("lux_switch.threshold", 50),
+		LuxSwitchStateDir:  r.str("lux_switch.state_dir", "/var/lib/picam-orchestrator"),
 
 		HTTPPort:      r.int("output.http_port", 81),
 		StatusPort:    r.int("output.status_port", 8091),

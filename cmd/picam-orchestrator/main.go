@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"picam-orchestrator/internal/config"
 	"picam-orchestrator/internal/delaybuffer"
 	"picam-orchestrator/internal/detect"
+	"picam-orchestrator/internal/luxswitch"
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/rawframe"
 	"picam-orchestrator/internal/recorder"
@@ -86,6 +88,11 @@ func main() {
 		return frame.Data, frame.Width, frame.Height, true
 	}
 
+	luxState := luxswitch.New(
+		filepath.Join(cfg.LuxSwitchStateDir, "lux_switch.json"),
+		cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold,
+	)
+
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
 		HTTPPort:        cfg.HTTPPort,
 		DefaultStream:   webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMainHigh),
@@ -96,7 +103,7 @@ func main() {
 		MaxClients:      50,
 		DebugFrameJPEG:  debugFrameJPEG,
 		DebugFrameRaw:   debugFrameRaw,
-	}, status, telState)
+	}, status, telState, luxState)
 	if err != nil {
 		log.Fatalf("[WebRTC] %v", err)
 	}
@@ -197,6 +204,9 @@ func main() {
 	runBg(func() {
 		telemetry.Run(ctx, cfg.TelemetryHost, cfg.TelemetryPort, telState)
 	})
+	runBg(func() {
+		luxswitch.Run(ctx, luxState, telState, cfg.TelemetryHost, cfg.CommandPort)
+	})
 	runBg(func() { evtRecorder.Run(ctx) })
 
 	srv.Start()
@@ -234,6 +244,7 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] webrtc      : ice_ports=%d-%d", cfg.ICEPortMin, cfg.ICEPortMax)
 	log.Printf("[Config] annotate    : main=%v lores=%v", cfg.AnnotateMain, cfg.AnnotateLores)
 	log.Printf("[Config] osd         : camera_id=%v time=%v", cfg.OSDCameraID, cfg.OSDTime)
+	log.Printf("[Config] lux_switch  : enabled=%v threshold=%d state_dir=%s", cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold, cfg.LuxSwitchStateDir)
 	log.Printf("[Config] output      : http_port=%d status_port=%d default_stream=%s", cfg.HTTPPort, cfg.StatusPort, cfg.DefaultStream)
 	log.Printf("[Config] recorder    : %s:%d", cfg.RecorderHost, cfg.RecorderPort)
 }
