@@ -23,6 +23,7 @@ import (
 	"picam-orchestrator/internal/config"
 	"picam-orchestrator/internal/delaybuffer"
 	"picam-orchestrator/internal/detect"
+	"picam-orchestrator/internal/discovery"
 	"picam-orchestrator/internal/luxswitch"
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/rawframe"
@@ -48,6 +49,16 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	discSrv, err := discovery.Advertise(discovery.Config{
+		Enabled:  cfg.DiscoveryEnabled,
+		Name:     cfg.DiscoveryName,
+		Label:    cfg.DiscoveryLabel,
+		HTTPPort: cfg.HTTPPort,
+	})
+	if err != nil {
+		log.Fatalf("[Discovery] %v", err)
+	}
 
 	status := &pipestat.Status{}
 	telState := &telemetry.State{}
@@ -225,6 +236,9 @@ func main() {
 		mainEncoderHigh, mainEncoderLow, loresEncoder)
 
 	log.Printf("[Main] Shutting down.")
+	if discSrv != nil {
+		discSrv.Shutdown()
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	srv.Stop(shutdownCtx)
 	shutdownCancel()
@@ -245,6 +259,7 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] annotate    : main=%v lores=%v", cfg.AnnotateMain, cfg.AnnotateLores)
 	log.Printf("[Config] osd         : camera_id=%v time=%v", cfg.OSDCameraID, cfg.OSDTime)
 	log.Printf("[Config] lux_switch  : enabled=%v threshold=%d state_dir=%s", cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold, cfg.LuxSwitchStateDir)
+	log.Printf("[Config] discovery   : enabled=%v name=%q label=%q", cfg.DiscoveryEnabled, cfg.DiscoveryName, cfg.DiscoveryLabel)
 	log.Printf("[Config] output      : http_port=%d status_port=%d default_stream=%s", cfg.HTTPPort, cfg.StatusPort, cfg.DefaultStream)
 	log.Printf("[Config] recorder    : %s:%d", cfg.RecorderHost, cfg.RecorderPort)
 }

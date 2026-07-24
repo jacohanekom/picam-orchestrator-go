@@ -125,6 +125,10 @@ echo status | nc <pi-ip> 8091
 
 `enabled`/`threshold` start from `[lux_switch]` in `config.ini`, but a runtime change via `GET /lux-switch` is **persisted to disk** (`state_dir`, default `/var/lib/picam-orchestrator`) and takes priority over the config file on the next start — unlike `[osd]`/`[annotate]`, which are deliberately in-memory-only and always reset to their config.ini default on restart. `picam-frontend`'s sidebar is a remote control for this setting, not where the logic runs — see that project's README.
 
+### Automatic discovery by picam-frontend
+
+`internal/discovery` advertises this process over mDNS/DNS-SD (Zeroconf/Bonjour, RFC 6762/6763) as `_picam-orchestrator._tcp.local.`, using [`libp2p/zeroconf`](https://github.com/libp2p/zeroconf). `picam-frontend` browses for this service type instead of reading a static `[pis]` list, so a Pi shows up automatically as long as both processes are on the same mDNS-reachable network segment (typically: same L2 broadcast domain/VLAN — mDNS doesn't cross routed subnets). `[discovery].name` becomes the short id picam-frontend uses in its `?pi=` URLs (defaults to this Pi's OS hostname), and `[discovery].label` is the display label shown in picam-frontend's UI (defaults to the same value as `name`), carried as a TXT record. Set `[discovery].enabled = false` to opt a Pi out of discovery entirely.
+
 ## Architecture
 
 ```
@@ -147,6 +151,8 @@ picam-frontend maintains up to three separate upstream WebRTC connections per Pi
 | `internal/detect` | Detection JSON types, timestamp-indexed buffer, TCP receiver |
 | `internal/telemetry` | Lux/active-camera TCP receiver + shared state |
 | `internal/camrpc` | One-shot camera-switch TCP command to picam-raw |
+| `internal/luxswitch` | Automatic camera-lens switching by ambient light, persisted to disk |
+| `internal/discovery` | mDNS/DNS-SD advertisement so picam-frontend can find this Pi automatically |
 | `internal/recorder` | picam-recorder TCP control + detection-triggered recording orchestration |
 | `internal/annotate` | 5x7 bitmap font, Y-plane box/label drawing, OSD burn-in |
 | `internal/snapshot` | YUV420→JPEG for event snapshot files (stdlib `image/jpeg`) |

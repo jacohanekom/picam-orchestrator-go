@@ -219,6 +219,11 @@ type Config struct {
 	LuxSwitchThreshold int
 	LuxSwitchStateDir  string
 
+	// [discovery]
+	DiscoveryEnabled bool
+	DiscoveryName    string
+	DiscoveryLabel   string
+
 	// [output]
 	HTTPPort      int
 	StatusPort    int
@@ -305,6 +310,10 @@ func Load(path string) (*Config, error) {
 		LuxSwitchEnabled:   r.boolean("lux_switch.enabled", false),
 		LuxSwitchThreshold: r.int("lux_switch.threshold", 50),
 		LuxSwitchStateDir:  r.str("lux_switch.state_dir", "/var/lib/picam-orchestrator"),
+
+		DiscoveryEnabled: r.boolean("discovery.enabled", true),
+		DiscoveryName:    r.str("discovery.name", ""),
+		DiscoveryLabel:   r.str("discovery.label", ""),
 
 		HTTPPort:      r.int("output.http_port", 81),
 		StatusPort:    r.int("output.status_port", 8091),
