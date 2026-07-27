@@ -240,6 +240,16 @@ func (s *State) RelayOn() bool {
 	return relayOn
 }
 
+// ManualCooldownRemaining reports how much longer Trigger's manual-only
+// cooldown will block a change, 0 if one would currently be allowed --
+// for exposing over /status.json so a client (e.g. picam-frontend's
+// manual toggle) can show this proactively, rather than only
+// discovering it after attempting a blocked change.
+func (s *State) ManualCooldownRemaining() time.Duration {
+	_, retryAfter := s.manualCoolingDown()
+	return retryAfter
+}
+
 func (s *State) setCutoffArmed(armed bool) {
 	s.mu.Lock()
 	s.cutoffArmed = armed

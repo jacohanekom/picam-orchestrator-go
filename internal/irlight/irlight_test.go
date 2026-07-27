@@ -261,6 +261,28 @@ func TestRelayOn(t *testing.T) {
 	}
 }
 
+func TestManualCooldownRemaining(t *testing.T) {
+	s := New("", false, 50, 0, false, 30, 15)
+	if remaining := s.ManualCooldownRemaining(); remaining != 0 {
+		t.Fatalf("fresh state ManualCooldownRemaining() = %v, want 0", remaining)
+	}
+
+	s.mu.Lock()
+	s.lastManualToggleAt = time.Now()
+	s.mu.Unlock()
+	remaining := s.ManualCooldownRemaining()
+	if remaining <= 0 || remaining > manualCooldown {
+		t.Fatalf("ManualCooldownRemaining() right after a manual toggle = %v, want a positive duration no greater than manualCooldown (%v)", remaining, manualCooldown)
+	}
+
+	s.mu.Lock()
+	s.lastManualToggleAt = time.Now().Add(-manualCooldown)
+	s.mu.Unlock()
+	if remaining := s.ManualCooldownRemaining(); remaining != 0 {
+		t.Fatalf("ManualCooldownRemaining() after the cooldown has fully elapsed = %v, want 0", remaining)
+	}
+}
+
 func TestTrigger(t *testing.T) {
 	t.Run("already in requested state is a no-op", func(t *testing.T) {
 		s := New("", false, 50, 0, false, 30, 15) // relay starts off
