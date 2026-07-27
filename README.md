@@ -96,6 +96,7 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 | `/lux-switch?enabled=true\|false&threshold=N` | Configure automatic lens switching by ambient light — see below |
 | `/ir-light?enabled=true\|false&threshold=N&max_on_minutes=N&sunrise_enabled=true\|false&sunrise_before_minutes=N&sunrise_after_minutes=N` | Configure automatic IR-illuminator control via relay — see below |
 | `/ir-light/trigger?on=true\|false` | Directly command the IR-light relay on/off right now — see below |
+| `/record?on=true\|false` | Manually start/stop a picam-recorder recording, independent of detection activity — see below |
 | `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
 
 `/webrtc/offer` is meant to be called by `picam-frontend`, not a browser directly. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
@@ -127,6 +128,10 @@ curl http://<pi-ip>:81/ir-light?sunrise_enabled=true&sunrise_before_minutes=30&s
 # Turn the IR light relay on right now, regardless of either trigger's own state
 curl http://<pi-ip>:81/ir-light/trigger?on=true
 
+# Start (and later stop) a manual recording, independent of detection activity
+curl http://<pi-ip>:81/record?on=true
+curl http://<pi-ip>:81/record?on=false
+
 # Check pipeline status (plaintext key=value)
 echo status | nc <pi-ip> 8091
 ```
@@ -148,6 +153,12 @@ echo status | nc <pi-ip> 8091
 `GET /ir-light/trigger?on=true|false` commands the relay directly, bypassing both triggers' decision logic — for testing wiring, or a one-off override. It still goes through the same cooldown and `max_on_minutes` cap as an automatic toggle (a manually-triggered relay is not exempt from the hardware safety limit), and it's not a persisted setting — it's an action, not a mode. If either trigger is enabled, its next 5s tick re-asserts automatic control over whatever the manual command just set; with both disabled, the relay just stays as manually set until the next manual command.
 
 A second, **independent** trigger can run alongside the lux-based one: `sunrise_enabled` forces the relay on for a window of `sunrise_before_minutes` before computed local sunrise through `sunrise_after_minutes` after it — a guaranteed pre-dawn boost regardless of what the lux sensor currently reads, using [`github.com/nathan-osman/go-sunrise`](https://github.com/nathan-osman/go-sunrise) against `[ir_light].latitude`/`longitude` (config.ini-only — a physical install constant, not live-configurable; `sunrise_enabled` does nothing meaningful until these are set for the Pi's actual location). Unlike the lux trigger, the sunrise window is **not** suppressed by an already-armed `max_on_minutes` cutoff from earlier in the night — it's a short, separately-bounded, deliberately-scheduled window, not part of that dark session's allotment — but the cap still applies to the combined on-time either way, as the one shared hardware safety net. Both triggers write through the same cooldown/state machinery, so they can never fight over the relay or double-toggle it.
+
+### Manual and automatic recording
+
+`internal/recorder.EventRecorder` drives `picam-recorder` from two independent sources sharing one recording session: detection activity from picam-hailo (via `detect.Run`'s callback), and a manual on-demand trigger, `GET /record?on=true|false`. Either one wanting a recording is enough to start one; if neither does, it stops.
+
+While a manual recording is active (`on=true`), the automatic stop paths that normally end a detection-triggered recording — an explicit "nothing detected" signal, and the idle-timeout watchdog (`[recorder].idle_secs`) — are suppressed, so it keeps going regardless of detection activity. `GET /record?on=false` always stops it immediately, even if detections are still active; if they are, a fresh detection-triggered recording can start again right after, same as normal. Detections that happen during a manual recording are still logged into that recording's `.events.json` sidecar exactly as they would be for an automatic one — manual mode only changes the start/stop decision, not event accumulation. A manual recording that starts with no detections active yet gets a `manual-`-prefixed filename so it's identifiable later; one that starts already amid detection activity is indistinguishable from (and can accumulate events like) an ordinary detection-triggered recording. `/record` is not a persisted setting — it's a one-off action scoped to whichever recording is in progress right now.
 
 ### Persisted Settings-page state
 

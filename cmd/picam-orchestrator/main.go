@@ -115,37 +115,13 @@ func main() {
 		cfg.IRLightSunriseEnabled, cfg.IRLightSunriseBeforeMinutes, cfg.IRLightSunriseAfterMinutes,
 	)
 
-	srv, err := webrtcsrv.New(webrtcsrv.Config{
-		HTTPPort:         cfg.HTTPPort,
-		DefaultStream:    webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMainHigh),
-		ICEPortMin:       uint16(cfg.ICEPortMin),
-		ICEPortMax:       uint16(cfg.ICEPortMax),
-		PicamRawHost:     cfg.TelemetryHost,
-		PicamRawCmdPort:  cfg.CommandPort,
-		MaxClients:       50,
-		DebugFrameJPEG:   debugFrameJPEG,
-		DebugFrameRaw:    debugFrameRaw,
-		IRLightRelayHost: cfg.IRLightRelayHost,
-		IRLightRelayPort: cfg.IRLightRelayPort,
-	}, status, telState, luxState, uiState, irState)
-	if err != nil {
-		log.Fatalf("[WebRTC] %v", err)
-	}
-	// Seeded from uiState's Snapshot (persisted value, if any, else the
-	// [osd]/[annotate] config.ini defaults uiState was constructed
-	// with) rather than cfg directly, so a prior runtime change survives
-	// this restart.
-	osdCameraID, osdTime, annotateMain, annotateLores, _ := uiState.Snapshot()
-	srv.OSDCameraID.Store(osdCameraID)
-	srv.OSDTime.Store(osdTime)
-	srv.MainAnnotated.Store(annotateMain)
-	srv.LoresAnnotated.Store(annotateLores)
-
 	// EventRecorder's snapshot callback: annotate a copy of the current
 	// live MAIN frame with the triggering event's boxes and JPEG-encode
 	// it. Always sourced from main's live mailbox, regardless of which
 	// resolution's detections triggered the recording or whether main
 	// annotation mode is currently on — matching the C++ original.
+	// Built (and evtRecorder constructed) ahead of webrtcsrv.New below so
+	// it can be passed in for the manual GET /record trigger.
 	snapshotFn := func(evt detect.Event) []byte {
 		frame, ok := mainMailbox.Get()
 		if !ok || len(frame.Data) == 0 {
@@ -161,6 +137,32 @@ func main() {
 		return jpg
 	}
 	evtRecorder := recorder.New(cfg.RecorderHost, cfg.RecorderPort, cfg.RecorderIdleSecs, snapshotFn)
+
+	srv, err := webrtcsrv.New(webrtcsrv.Config{
+		HTTPPort:         cfg.HTTPPort,
+		DefaultStream:    webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMainHigh),
+		ICEPortMin:       uint16(cfg.ICEPortMin),
+		ICEPortMax:       uint16(cfg.ICEPortMax),
+		PicamRawHost:     cfg.TelemetryHost,
+		PicamRawCmdPort:  cfg.CommandPort,
+		MaxClients:       50,
+		DebugFrameJPEG:   debugFrameJPEG,
+		DebugFrameRaw:    debugFrameRaw,
+		IRLightRelayHost: cfg.IRLightRelayHost,
+		IRLightRelayPort: cfg.IRLightRelayPort,
+	}, status, telState, luxState, uiState, irState, evtRecorder)
+	if err != nil {
+		log.Fatalf("[WebRTC] %v", err)
+	}
+	// Seeded from uiState's Snapshot (persisted value, if any, else the
+	// [osd]/[annotate] config.ini defaults uiState was constructed
+	// with) rather than cfg directly, so a prior runtime change survives
+	// this restart.
+	osdCameraID, osdTime, annotateMain, annotateLores, _ := uiState.Snapshot()
+	srv.OSDCameraID.Store(osdCameraID)
+	srv.OSDTime.Store(osdTime)
+	srv.MainAnnotated.Store(annotateMain)
+	srv.LoresAnnotated.Store(annotateLores)
 
 	// The receiver callback hands each reassembled frame to both the live
 	// mailbox and the delay buffer; the mailbox gets its own independent

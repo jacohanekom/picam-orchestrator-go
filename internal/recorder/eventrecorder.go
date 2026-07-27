@@ -21,7 +21,8 @@ import (
 type SnapshotFunc func(detect.Event) []byte
 
 // EventRecorder starts/stops picam-recorder in response to detection
-// activity and writes a JSON event log alongside each recording.
+// activity and/or a manual on-demand trigger, and writes a JSON event
+// log alongside each recording.
 type EventRecorder struct {
 	host        string
 	port        int
@@ -33,6 +34,7 @@ type EventRecorder struct {
 	accumulated     []detect.Event
 	recording       bool
 	stopRequested   bool
+	manualActive    bool
 	currentFile     string
 	startedUs       int64
 	lastDetectionAt time.Time
@@ -66,11 +68,13 @@ func New(host string, port, idleSecs int, snapshotFn SnapshotFunc) *EventRecorde
 // (accumulated for the eventual .events.json, but not itself starting
 // the recording — that happens in Run's loop) and resets the idle
 // watchdog; an empty list requests an immediate stop if currently
-// recording.
+// recording, unless a manual recording is active — an incidental
+// "nothing detected right now" isn't itself a reason to end a
+// recording the user explicitly asked to keep going.
 func (r *EventRecorder) Notify(evt detect.Event) {
 	r.mu.Lock()
 	if len(evt.Detections) == 0 {
-		if r.recording {
+		if r.recording && !r.manualActive {
 			r.stopRequested = true
 		}
 	} else {
@@ -80,6 +84,48 @@ func (r *EventRecorder) Notify(evt detect.Event) {
 	}
 	r.mu.Unlock()
 
+	r.poke()
+}
+
+// StartManual marks a manual recording session as wanted, alongside
+// any detection-triggered one — Run's next tick starts a recording
+// immediately if nothing is already in progress. While manualActive,
+// neither Notify's empty-detections immediate-stop nor the idle-timeout
+// watchdog will end the recording; only StopManual does.
+func (r *EventRecorder) StartManual() {
+	r.mu.Lock()
+	r.manualActive = true
+	r.mu.Unlock()
+	r.poke()
+}
+
+// StopManual force-stops the current recording immediately (regardless
+// of any ongoing detection activity) and clears manual mode. If
+// detections are still active afterward, tick's normal automatic
+// behavior may start a fresh detection-triggered recording on its own
+// — StopManual only ends the recording just watched, it doesn't disable
+// automatic recording going forward.
+func (r *EventRecorder) StopManual() {
+	r.mu.Lock()
+	r.manualActive = false
+	if r.recording {
+		r.stopRequested = true
+	}
+	r.mu.Unlock()
+	r.poke()
+}
+
+// Status reports whether a recording is currently in progress and
+// whether it's manually active, for the HTTP status endpoint.
+func (r *EventRecorder) Status() (recording, manual bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recording, r.manualActive
+}
+
+// poke wakes Run's worker loop for an immediate tick instead of waiting
+// out its 1s fallback interval.
+func (r *EventRecorder) poke() {
 	select {
 	case r.wake <- struct{}{}:
 	default:
@@ -108,17 +154,26 @@ func (r *EventRecorder) Run(ctx context.Context) {
 
 func (r *EventRecorder) tick() {
 	r.mu.Lock()
-	startRecording := r.haveEvents && !r.recording
+	haveEvents := r.haveEvents
+	manual := r.manualActive
+	startRecording := (haveEvents || manual) && !r.recording
 	var triggerEvt detect.Event
-	if startRecording && len(r.accumulated) > 0 {
+	if startRecording && haveEvents && len(r.accumulated) > 0 {
 		triggerEvt = r.accumulated[0]
 	}
 	r.mu.Unlock()
 
 	if startRecording {
 		id := uuid.New().String()
+		name := id
+		if !haveEvents && manual {
+			// A pure manual start, nothing detected yet -- prefix the
+			// filename so it's identifiable later as not
+			// detection-triggered.
+			name = "manual-" + id
+		}
 		startedUs := time.Now().UnixMicro()
-		file := Start(r.host, r.port, id)
+		file := Start(r.host, r.port, name)
 
 		if file != "" && r.snapshotFn != nil && len(triggerEvt.Detections) > 0 {
 			if jpg := r.snapshotFn(triggerEvt); len(jpg) > 0 {
@@ -137,18 +192,21 @@ func (r *EventRecorder) tick() {
 			r.currentFile = file
 			r.startedUs = startedUs
 			r.lastDetectionAt = time.Now()
-			log.Printf("[EventRecorder] Started: %s", file)
+			log.Printf("[EventRecorder] Started: %s (manual=%v)", file, manual)
 		} else {
 			log.Printf("[EventRecorder] Failed to start recorder")
 			r.accumulated = nil
 			r.haveEvents = false
+			// manualActive deliberately left untouched -- Run's 1s
+			// fallback tick will keep retrying a manual start until it
+			// succeeds or the user cancels it via StopManual.
 		}
 		r.mu.Unlock()
 	}
 
 	r.mu.Lock()
 	stopNow := r.recording && r.stopRequested
-	idleTimedOut := !stopNow && r.recording && r.idleTimeout > 0 && time.Since(r.lastDetectionAt) >= r.idleTimeout
+	idleTimedOut := !stopNow && r.recording && !r.manualActive && r.idleTimeout > 0 && time.Since(r.lastDetectionAt) >= r.idleTimeout
 	idleFile := r.currentFile
 	if stopNow || idleTimedOut {
 		r.stopRequested = false
@@ -173,6 +231,7 @@ func (r *EventRecorder) flush() {
 	r.recording = false
 	r.currentFile = ""
 	r.haveEvents = false
+	r.manualActive = false
 	r.accumulated = nil
 	r.mu.Unlock()
 

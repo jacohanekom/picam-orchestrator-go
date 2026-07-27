@@ -20,6 +20,7 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /lux-switch", s.handleLuxSwitch)
 	mux.HandleFunc("GET /ir-light", s.handleIRLight)
 	mux.HandleFunc("GET /ir-light/trigger", s.handleIRLightTrigger)
+	mux.HandleFunc("GET /record", s.handleRecord)
 	mux.HandleFunc("GET /status.json", s.handleStatusJSON)
 	mux.HandleFunc("GET /debug/frame.jpg", s.handleDebugFrame)
 	mux.HandleFunc("GET /debug/frame.raw", s.handleDebugFrameRaw)
@@ -315,6 +316,26 @@ func (s *Server) handleIRLightTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": reached, "relay_on": on})
 }
 
+// handleRecord implements GET /record?on=<bool>, a direct manual
+// start/stop of picam-recorder via internal/recorder.EventRecorder --
+// see that package's StartManual/StopManual for how this interacts
+// with detection-triggered recording (it doesn't disable it; a manual
+// recording just isn't auto-stopped by detection activity going idle).
+func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
+	on, ok := parseBoolParam(r.URL.Query().Get("on"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing or invalid on"})
+		return
+	}
+	if on {
+		s.evtRecorder.StartManual()
+	} else {
+		s.evtRecorder.StopManual()
+	}
+	recording, manual := s.evtRecorder.Status()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recording": recording, "recording_manual": manual})
+}
+
 func round1(v float32) float64 {
 	return math.Round(float64(v)*10) / 10
 }
@@ -327,6 +348,7 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	luxEnabled, luxThreshold := s.luxSwitch.Get()
 	irEnabled, irThreshold, irMaxOnMinutes := s.irLight.Get()
 	irSunriseEnabled, irSunriseBefore, irSunriseAfter := s.irLight.GetSunrise()
+	recording, recordingManual := s.evtRecorder.Status()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"clients":                         total,
@@ -342,6 +364,8 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 		"ir_light_sunrise_enabled":        irSunriseEnabled,
 		"ir_light_sunrise_before_minutes": irSunriseBefore,
 		"ir_light_sunrise_after_minutes":  irSunriseAfter,
+		"recording":                       recording,
+		"recording_manual":                recordingManual,
 		"frame_ts_us":                     snap.LatestFrameTsUs,
 		"streams": map[string]int{
 			"main":      mainHigh + mainLow,
