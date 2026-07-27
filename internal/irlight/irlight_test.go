@@ -1,12 +1,42 @@
 package irlight
 
 import (
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"picam-orchestrator/internal/telemetry"
 )
+
+// startFakeRelay listens on an ephemeral local port and answers every
+// connection with a single line, mimicking enough of pi-relay-control's
+// protocol for relayrpc.SetRelay to report reached=true -- needed to
+// unit-test a genuinely successful Trigger() without a real relay.
+func startFakeRelay(t *testing.T) (host string, port int) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start fake relay listener: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 64)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("OK\n"))
+			}(conn)
+		}
+	}()
+	addr := ln.Addr().(*net.TCPAddr)
+	return addr.IP.String(), addr.Port
+}
 
 func TestDecideDarkTrigger(t *testing.T) {
 	const threshold = 50
@@ -296,7 +326,8 @@ func TestTrigger(t *testing.T) {
 
 	t.Run("manual cooldown does not block the very first manual change", func(t *testing.T) {
 		s := New("", false, 50, 0, false, 30, 15) // lastManualToggleAt is zero
-		reached, retryAfter := Trigger(s, "", 0, true)
+		host, port := startFakeRelay(t)
+		reached, retryAfter := Trigger(s, host, port, true)
 		if !reached || retryAfter != 0 {
 			t.Fatalf("first-ever manual Trigger should succeed unblocked, got (%v, %v)", reached, retryAfter)
 		}
