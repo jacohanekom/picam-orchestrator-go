@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"picam-orchestrator/internal/camrpc"
+	"picam-orchestrator/internal/irlight"
 )
 
 func (s *Server) registerHandlers(mux *http.ServeMux) {
@@ -18,6 +19,7 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /camera", s.handleCamera)
 	mux.HandleFunc("GET /lux-switch", s.handleLuxSwitch)
 	mux.HandleFunc("GET /ir-light", s.handleIRLight)
+	mux.HandleFunc("GET /ir-light/trigger", s.handleIRLightTrigger)
 	mux.HandleFunc("GET /status.json", s.handleStatusJSON)
 	mux.HandleFunc("GET /debug/frame.jpg", s.handleDebugFrame)
 	mux.HandleFunc("GET /debug/frame.raw", s.handleDebugFrameRaw)
@@ -295,6 +297,22 @@ func (s *Server) handleIRLight(w http.ResponseWriter, r *http.Request) {
 		"ir_light_sunrise_before_minutes": sunriseBefore,
 		"ir_light_sunrise_after_minutes":  sunriseAfter,
 	})
+}
+
+// handleIRLightTrigger implements GET /ir-light/trigger?on=<bool>, a
+// direct manual on/off command -- bypasses the dark/sunrise decision
+// logic entirely (see irlight.Trigger), but still goes through the
+// same cooldown/max-on-minutes safety cap as an automatic toggle. This
+// is an imperative action, not a settings patch, so ?on= is required
+// rather than optional.
+func (s *Server) handleIRLightTrigger(w http.ResponseWriter, r *http.Request) {
+	on, ok := parseBoolParam(r.URL.Query().Get("on"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing or invalid on"})
+		return
+	}
+	reached := irlight.Trigger(s.irLight, s.cfg.IRLightRelayHost, s.cfg.IRLightRelayPort, on)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": reached, "relay_on": on})
 }
 
 func round1(v float32) float64 {

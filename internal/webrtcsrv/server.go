@@ -79,6 +79,14 @@ type Config struct {
 	PicamRawCmdPort        int
 	MaxClients             int
 
+	// IRLightRelayHost/Port locate pi-relay-control for the manual
+	// GET /ir-light/trigger endpoint -- the automatic dark/sunrise
+	// triggers already get these directly as irlight.Run params, but
+	// the manual-trigger HTTP handler needs its own copy to call
+	// irlight.Trigger with.
+	IRLightRelayHost string
+	IRLightRelayPort int
+
 	// DebugFrameJPEG, if set, JPEG-encodes the current frame for the
 	// given stream straight from its live mailbox — bypassing VP8 and
 	// WebRTC entirely — for the GET /debug/frame.jpg diagnostic. Lets a

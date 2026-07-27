@@ -1,26 +1,31 @@
-// Package irlight implements automatic IR-illuminator control based on
-// two independent triggers that share one relay:
+// Package irlight implements IR-illuminator control via a relay (the
+// sibling pi-relay-control daemon, running locally on this same Pi),
+// driven by up to three independent sources that all share one relay:
 //
-//   - The "dark" trigger: below a configured lux threshold, a relay
-//     wired to the light (via the sibling pi-relay-control daemon,
-//     running locally on this same Pi) is switched on; above it, off.
+//   - The "dark" trigger: below a configured lux threshold, the relay
+//     is switched on; above it, off.
 //   - The "sunrise" trigger: forces the relay on for a configurable
 //     window of minutes before/after computed local sunrise
 //     (github.com/nathan-osman/go-sunrise), regardless of the lux
 //     reading — a guaranteed pre-dawn boost independent of the dark
 //     trigger's own state.
+//   - A manual trigger (Trigger), for direct on/off commands (e.g. a
+//     UI button) independent of either automatic trigger. If either
+//     automatic trigger is enabled, its next tick re-asserts control;
+//     if both are disabled, the relay just stays as manually set.
 //
 // A configurable cap limits how many minutes the relay may stay
-// continuously on (combining both triggers), as a hardware safety
-// limit — once hit, the relay is forced off and the dark trigger stays
-// off for the rest of that dark period, only re-arming once lux rises
-// back above the threshold (day) and drops below it again (a fresh
-// dark session); the sunrise trigger is not subject to that arm/disarm
-// state, since it's already a short, separately-bounded window.
+// continuously on — regardless of which of the three sources put it
+// there — as a hardware safety limit. Once hit (from the dark or
+// manual trigger), the relay is forced off and stays off until lux
+// rises back above the threshold (day) and drops below it again (a
+// fresh dark session); the sunrise trigger is not subject to that
+// arm/disarm state, since it's already a short, separately-bounded
+// window.
 //
 // All settings are configured live over HTTP (see webrtcsrv's
-// /ir-light handler) and persisted to disk so they survive a service
-// restart, exactly like internal/luxswitch.
+// /ir-light and /ir-light/trigger handlers) and persisted to disk so
+// they survive a service restart, exactly like internal/luxswitch.
 package irlight
 
 import (
@@ -315,15 +320,40 @@ func Run(ctx context.Context, state *State, tel *telemetry.State, relayHost stri
 	}
 }
 
+// Trigger directly commands the relay on/off, bypassing the dark/
+// sunrise decision logic entirely — but still through the same
+// cooldown and runtime tracking (onSince) as an automatic toggle, so
+// the max-on-minutes safety cap and relay-wear cooldown apply to a
+// manually-triggered state exactly as they would to an automatic one.
+// The next tick will re-assert automatic control if either trigger is
+// enabled; if both are disabled, the relay simply stays as set here.
+func Trigger(state *State, relayHost string, relayPort int, on bool) (reached bool) {
+	current, _, _ := state.runtimeSnapshot()
+	if on == current {
+		return true // already in the requested state, nothing to do
+	}
+	if state.coolingDown() {
+		return false
+	}
+	reached, _ = relayrpc.SetRelay(relayHost, relayPort, on)
+	if !reached {
+		state.undoLastToggle()
+		return false
+	}
+	state.commitToggle(on)
+	return true
+}
+
 func tick(state *State, tel *telemetry.State, relayHost string, relayPort int, lat, lon float64) {
 	enabled, threshold, maxOnMinutes := state.Get()
 	sunriseEnabled, beforeMin, afterMin := state.GetSunrise()
-	if !enabled && !sunriseEnabled {
-		return
-	}
 
 	currentlyOn, onFor, cutoffArmed := state.runtimeSnapshot()
-	want, nextArmed := false, cutoffArmed
+	// Default: no automatic trigger has an opinion this tick -- hold
+	// whatever's already there (e.g. a manually-triggered state). The
+	// cap check below still applies regardless, so a manual "on" is
+	// never exempt from the hardware safety limit.
+	want, nextArmed := currentlyOn, cutoffArmed
 
 	if enabled {
 		if snap := tel.Snapshot(); snap.Connected {

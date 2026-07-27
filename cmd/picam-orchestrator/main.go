@@ -116,15 +116,17 @@ func main() {
 	)
 
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
-		HTTPPort:        cfg.HTTPPort,
-		DefaultStream:   webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMainHigh),
-		ICEPortMin:      uint16(cfg.ICEPortMin),
-		ICEPortMax:      uint16(cfg.ICEPortMax),
-		PicamRawHost:    cfg.TelemetryHost,
-		PicamRawCmdPort: cfg.CommandPort,
-		MaxClients:      50,
-		DebugFrameJPEG:  debugFrameJPEG,
-		DebugFrameRaw:   debugFrameRaw,
+		HTTPPort:         cfg.HTTPPort,
+		DefaultStream:    webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMainHigh),
+		ICEPortMin:       uint16(cfg.ICEPortMin),
+		ICEPortMax:       uint16(cfg.ICEPortMax),
+		PicamRawHost:     cfg.TelemetryHost,
+		PicamRawCmdPort:  cfg.CommandPort,
+		MaxClients:       50,
+		DebugFrameJPEG:   debugFrameJPEG,
+		DebugFrameRaw:    debugFrameRaw,
+		IRLightRelayHost: cfg.IRLightRelayHost,
+		IRLightRelayPort: cfg.IRLightRelayPort,
 	}, status, telState, luxState, uiState, irState)
 	if err != nil {
 		log.Fatalf("[WebRTC] %v", err)

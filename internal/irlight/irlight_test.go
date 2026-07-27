@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"picam-orchestrator/internal/telemetry"
 )
 
 func TestDecideDarkTrigger(t *testing.T) {
@@ -211,5 +213,69 @@ func TestRuntimeSnapshotAndCommitToggle(t *testing.T) {
 	on, onFor, armed = s.runtimeSnapshot()
 	if on || onFor != 0 {
 		t.Fatalf("after commitToggle(false), runtimeSnapshot = (%v, %v, %v), want (false, 0, ...)", on, onFor, armed)
+	}
+}
+
+func TestTrigger(t *testing.T) {
+	t.Run("already in requested state is a no-op", func(t *testing.T) {
+		s := New("", false, 50, 0, false, 30, 15) // relay starts off
+		// Deliberately empty host:port -- if this reached the network at
+		// all, relayrpc.SetRelay would fail and Trigger would return false.
+		if !Trigger(s, "", 0, false) {
+			t.Fatalf("Trigger(off) on an already-off relay should be a no-op returning true")
+		}
+	})
+
+	t.Run("cooldown blocks a toggle attempted too soon after another", func(t *testing.T) {
+		s := New("", false, 50, 0, false, 30, 15)
+		s.mu.Lock()
+		s.lastToggleAt = time.Now() // simulate a toggle that just happened
+		s.mu.Unlock()
+
+		if Trigger(s, "", 0, true) {
+			t.Fatalf("Trigger should be blocked by an active cooldown")
+		}
+		on, _, _ := s.runtimeSnapshot()
+		if on {
+			t.Fatalf("a cooldown-blocked Trigger should not change the tracked relay state")
+		}
+	})
+
+	t.Run("a failed relay command undoes the cooldown so it can be retried", func(t *testing.T) {
+		s := New("", false, 50, 0, false, 30, 15)
+		if Trigger(s, "127.0.0.1", 1, true) { // port 1 -- nothing listens there
+			t.Fatalf("Trigger against an unreachable relay should report failure")
+		}
+		s.mu.Lock()
+		zero := s.lastToggleAt.IsZero()
+		s.mu.Unlock()
+		if !zero {
+			t.Fatalf("a failed Trigger should undo the cooldown timestamp so the next attempt isn't blocked")
+		}
+	})
+}
+
+// TestTickAppliesCapEvenWithBothTriggersDisabled closes the gap Trigger
+// introduces: a manually-triggered "on" state must still be subject to
+// the max-on-minutes hardware safety cap, even though neither
+// automatic trigger is enabled to otherwise drive tick's decision.
+func TestTickAppliesCapEvenWithBothTriggersDisabled(t *testing.T) {
+	s := New("", false, 50, 0, false, 30, 15) // both triggers disabled
+	s.commitToggle(true)                      // simulate a manually-triggered "on" state
+	s.mu.Lock()
+	s.onSince = time.Now().Add(-31 * time.Minute) // pretend it's been on 31 minutes
+	s.maxOnMinutes = 30
+	s.mu.Unlock()
+
+	tel := &telemetry.State{} // zero value: disconnected, irrelevant since both triggers are disabled
+
+	// Unreachable relay: tick will attempt to command it off (the cap
+	// firing) and that attempt will fail, but the cutoff-armed bookkeeping
+	// happens before that attempt regardless of whether it succeeds.
+	tick(s, tel, "127.0.0.1", 1, 0, 0)
+
+	_, _, armed := s.runtimeSnapshot()
+	if !armed {
+		t.Fatalf("expected the safety cap to arm the cutoff even with both automatic triggers disabled")
 	}
 }
