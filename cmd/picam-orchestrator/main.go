@@ -112,6 +112,7 @@ func main() {
 	irState := irlight.New(
 		filepath.Join(cfg.IRLightStateDir, "ir_light.json"),
 		cfg.IRLightEnabled, cfg.IRLightThreshold, cfg.IRLightMaxOnMinutes,
+		cfg.IRLightSunriseEnabled, cfg.IRLightSunriseBeforeMinutes, cfg.IRLightSunriseAfterMinutes,
 	)
 
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
@@ -234,7 +235,7 @@ func main() {
 		luxswitch.Run(ctx, luxState, telState, cfg.TelemetryHost, cfg.CommandPort)
 	})
 	runBg(func() {
-		irlight.Run(ctx, irState, telState, cfg.IRLightRelayHost, cfg.IRLightRelayPort)
+		irlight.Run(ctx, irState, telState, cfg.IRLightRelayHost, cfg.IRLightRelayPort, cfg.IRLightLatitude, cfg.IRLightLongitude)
 	})
 	// One-shot, not a loop like the Runs above: restores the last
 	// selected lens if it differs from whatever picam-raw reports once
@@ -285,6 +286,8 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] lux_switch  : enabled=%v threshold=%d state_dir=%s", cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold, cfg.LuxSwitchStateDir)
 	log.Printf("[Config] ir_light    : enabled=%v threshold=%d max_on_minutes=%d relay=%s:%d state_dir=%s",
 		cfg.IRLightEnabled, cfg.IRLightThreshold, cfg.IRLightMaxOnMinutes, cfg.IRLightRelayHost, cfg.IRLightRelayPort, cfg.IRLightStateDir)
+	log.Printf("[Config] ir_light sunrise: enabled=%v before=%dm after=%dm lat=%.4f lon=%.4f",
+		cfg.IRLightSunriseEnabled, cfg.IRLightSunriseBeforeMinutes, cfg.IRLightSunriseAfterMinutes, cfg.IRLightLatitude, cfg.IRLightLongitude)
 	log.Printf("[Config] discovery   : enabled=%v name=%q label=%q", cfg.DiscoveryEnabled, cfg.DiscoveryName, cfg.DiscoveryLabel)
 	log.Printf("[Config] ui_state    : state_dir=%s", cfg.UIStateDir)
 	log.Printf("[Config] output      : http_port=%d status_port=%d default_stream=%s", cfg.HTTPPort, cfg.StatusPort, cfg.DefaultStream)

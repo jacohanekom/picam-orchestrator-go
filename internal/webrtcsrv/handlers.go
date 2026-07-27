@@ -224,11 +224,13 @@ func (s *Server) handleLuxSwitch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleIRLight implements GET /ir-light?enabled=<bool>&threshold=<int>&max_on_minutes=<int>.
-// The actual lux-crossing evaluation and relay command runs in
-// internal/irlight's own background loop, not here -- this handler
-// only reads/updates its live configuration (persisted to disk by
-// irlight.State.Set, so it survives a restart).
+// handleIRLight implements GET /ir-light?enabled=<bool>&threshold=<int>
+// &max_on_minutes=<int>&sunrise_enabled=<bool>&sunrise_before_minutes=<int>
+// &sunrise_after_minutes=<int>. The actual lux-crossing/sunrise-window
+// evaluation and relay command runs in internal/irlight's own
+// background loop, not here -- this handler only reads/updates its
+// live configuration (persisted to disk by irlight.State.Set/
+// SetSunrise, so it survives a restart).
 func (s *Server) handleIRLight(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -257,12 +259,41 @@ func (s *Server) handleIRLight(w http.ResponseWriter, r *http.Request) {
 		maxOnMinutesPtr = &v
 	}
 
+	var sunriseEnabledPtr *bool
+	if v, ok := parseBoolParam(q.Get("sunrise_enabled")); ok {
+		sunriseEnabledPtr = &v
+	}
+
+	var sunriseBeforePtr *int
+	if raw := q.Get("sunrise_before_minutes"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sunrise_before_minutes"})
+			return
+		}
+		sunriseBeforePtr = &v
+	}
+
+	var sunriseAfterPtr *int
+	if raw := q.Get("sunrise_after_minutes"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sunrise_after_minutes"})
+			return
+		}
+		sunriseAfterPtr = &v
+	}
+
 	enabled, threshold, maxOnMinutes := s.irLight.Set(enabledPtr, thresholdPtr, maxOnMinutesPtr)
+	sunriseEnabled, sunriseBefore, sunriseAfter := s.irLight.SetSunrise(sunriseEnabledPtr, sunriseBeforePtr, sunriseAfterPtr)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                      true,
-		"ir_light_enabled":        enabled,
-		"ir_light_threshold":      threshold,
-		"ir_light_max_on_minutes": maxOnMinutes,
+		"ok":                              true,
+		"ir_light_enabled":                enabled,
+		"ir_light_threshold":              threshold,
+		"ir_light_max_on_minutes":         maxOnMinutes,
+		"ir_light_sunrise_enabled":        sunriseEnabled,
+		"ir_light_sunrise_before_minutes": sunriseBefore,
+		"ir_light_sunrise_after_minutes":  sunriseAfter,
 	})
 }
 
@@ -277,19 +308,23 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	tel := s.telemetry.Snapshot()
 	luxEnabled, luxThreshold := s.luxSwitch.Get()
 	irEnabled, irThreshold, irMaxOnMinutes := s.irLight.Get()
+	irSunriseEnabled, irSunriseBefore, irSunriseAfter := s.irLight.GetSunrise()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"clients":                 total,
-		"camera_id_enabled":       s.OSDCameraID.Load(),
-		"time_enabled":            s.OSDTime.Load(),
-		"lores_annotated":         s.LoresAnnotated.Load(),
-		"main_annotated":          s.MainAnnotated.Load(),
-		"lux_switch_enabled":      luxEnabled,
-		"lux_switch_threshold":    luxThreshold,
-		"ir_light_enabled":        irEnabled,
-		"ir_light_threshold":      irThreshold,
-		"ir_light_max_on_minutes": irMaxOnMinutes,
-		"frame_ts_us":             snap.LatestFrameTsUs,
+		"clients":                         total,
+		"camera_id_enabled":               s.OSDCameraID.Load(),
+		"time_enabled":                    s.OSDTime.Load(),
+		"lores_annotated":                 s.LoresAnnotated.Load(),
+		"main_annotated":                  s.MainAnnotated.Load(),
+		"lux_switch_enabled":              luxEnabled,
+		"lux_switch_threshold":            luxThreshold,
+		"ir_light_enabled":                irEnabled,
+		"ir_light_threshold":              irThreshold,
+		"ir_light_max_on_minutes":         irMaxOnMinutes,
+		"ir_light_sunrise_enabled":        irSunriseEnabled,
+		"ir_light_sunrise_before_minutes": irSunriseBefore,
+		"ir_light_sunrise_after_minutes":  irSunriseAfter,
+		"frame_ts_us":                     snap.LatestFrameTsUs,
 		"streams": map[string]int{
 			"main":      mainHigh + mainLow,
 			"main_high": mainHigh,

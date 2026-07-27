@@ -94,7 +94,7 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 | `/osd?camera_id=true\|false&time=true\|false` | Toggle OSD overlays at runtime; persisted, see below |
 | `/camera?id=N` | Switch active camera (proxied to picam-raw); persisted, see below |
 | `/lux-switch?enabled=true\|false&threshold=N` | Configure automatic lens switching by ambient light — see below |
-| `/ir-light?enabled=true\|false&threshold=N&max_on_minutes=N` | Configure automatic IR-illuminator control via relay — see below |
+| `/ir-light?enabled=true\|false&threshold=N&max_on_minutes=N&sunrise_enabled=true\|false&sunrise_before_minutes=N&sunrise_after_minutes=N` | Configure automatic IR-illuminator control via relay — see below |
 | `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
 
 `/webrtc/offer` is meant to be called by `picam-frontend`, not a browser directly. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
@@ -120,6 +120,9 @@ curl http://<pi-ip>:81/lux-switch?enabled=true&threshold=60
 # Enable the IR light relay below 50 lux, capped at 30 continuous minutes
 curl http://<pi-ip>:81/ir-light?enabled=true&threshold=50&max_on_minutes=30
 
+# Also force it on for 30 minutes before sunrise through 15 after (needs [ir_light] latitude/longitude set)
+curl http://<pi-ip>:81/ir-light?sunrise_enabled=true&sunrise_before_minutes=30&sunrise_after_minutes=15
+
 # Check pipeline status (plaintext key=value)
 echo status | nc <pi-ip> 8091
 ```
@@ -137,6 +140,8 @@ echo status | nc <pi-ip> 8091
 `max_on_minutes` caps how long the relay may stay continuously on, as a hardware safety limit independent of the lux reading. Once hit, the relay is forced off and **stays off for the rest of that dark period** — it only re-arms (allowed to turn on again) once lux rises back above the threshold (day) and then drops below it again, so a single dark session never gets more than one allotment. `0` disables the cap entirely.
 
 `enabled`/`threshold`/`max_on_minutes` start from `[ir_light]` in `config.ini`, but a runtime change via `GET /ir-light` is **persisted to disk** (`state_dir`, default `/var/lib/picam-orchestrator/ir_light.json`) the same way `[lux_switch]` is. `picam-frontend`'s Settings page is a remote control for this setting, not where the logic runs.
+
+A second, **independent** trigger can run alongside the lux-based one: `sunrise_enabled` forces the relay on for a window of `sunrise_before_minutes` before computed local sunrise through `sunrise_after_minutes` after it — a guaranteed pre-dawn boost regardless of what the lux sensor currently reads, using [`github.com/nathan-osman/go-sunrise`](https://github.com/nathan-osman/go-sunrise) against `[ir_light].latitude`/`longitude` (config.ini-only — a physical install constant, not live-configurable; `sunrise_enabled` does nothing meaningful until these are set for the Pi's actual location). Unlike the lux trigger, the sunrise window is **not** suppressed by an already-armed `max_on_minutes` cutoff from earlier in the night — it's a short, separately-bounded, deliberately-scheduled window, not part of that dark session's allotment — but the cap still applies to the combined on-time either way, as the one shared hardware safety net. Both triggers write through the same cooldown/state machinery, so they can never fight over the relay or double-toggle it.
 
 ### Persisted Settings-page state
 

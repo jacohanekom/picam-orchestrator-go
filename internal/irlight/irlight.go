@@ -1,14 +1,26 @@
 // Package irlight implements automatic IR-illuminator control based on
-// ambient light: below a configured lux threshold, a relay wired to the
-// light (via the sibling pi-relay-control daemon, running locally on
-// this same Pi) is switched on; above it, off. A configurable cap
-// limits how many minutes the relay may stay continuously on, as a
-// hardware safety limit — once hit, the relay stays off for the rest
-// of that dark period and only re-arms once lux rises back above the
-// threshold (day) and drops below it again (a fresh dark session).
-// The enabled flag, threshold, and cap are configured live over HTTP
-// (see webrtcsrv's /ir-light handler) and persisted to disk so they
-// survive a service restart, exactly like internal/luxswitch.
+// two independent triggers that share one relay:
+//
+//   - The "dark" trigger: below a configured lux threshold, a relay
+//     wired to the light (via the sibling pi-relay-control daemon,
+//     running locally on this same Pi) is switched on; above it, off.
+//   - The "sunrise" trigger: forces the relay on for a configurable
+//     window of minutes before/after computed local sunrise
+//     (github.com/nathan-osman/go-sunrise), regardless of the lux
+//     reading — a guaranteed pre-dawn boost independent of the dark
+//     trigger's own state.
+//
+// A configurable cap limits how many minutes the relay may stay
+// continuously on (combining both triggers), as a hardware safety
+// limit — once hit, the relay is forced off and the dark trigger stays
+// off for the rest of that dark period, only re-arming once lux rises
+// back above the threshold (day) and drops below it again (a fresh
+// dark session); the sunrise trigger is not subject to that arm/disarm
+// state, since it's already a short, separately-bounded window.
+//
+// All settings are configured live over HTTP (see webrtcsrv's
+// /ir-light handler) and persisted to disk so they survive a service
+// restart, exactly like internal/luxswitch.
 package irlight
 
 import (
@@ -19,6 +31,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/nathan-osman/go-sunrise"
 
 	"picam-orchestrator/internal/relayrpc"
 	"picam-orchestrator/internal/telemetry"
@@ -33,16 +47,19 @@ const (
 	pollInterval = 5 * time.Second
 )
 
-// State holds the live-configurable enabled/threshold/maxOnMinutes
-// settings (persisted to disk) plus runtime relay-tracking fields
-// (never persisted — they reset on restart, same as luxswitch's own
-// lastSwitchAt).
+// State holds the live-configurable enabled/threshold/maxOnMinutes and
+// sunrise-window settings (persisted to disk) plus runtime
+// relay-tracking fields (never persisted — they reset on restart, same
+// as luxswitch's own lastSwitchAt).
 type State struct {
-	mu           sync.Mutex
-	enabled      bool
-	threshold    int
-	maxOnMinutes int
-	statePath    string
+	mu                   sync.Mutex
+	enabled              bool
+	threshold            int
+	maxOnMinutes         int
+	sunriseEnabled       bool
+	sunriseBeforeMinutes int
+	sunriseAfterMinutes  int
+	statePath            string
 
 	relayOn      bool      // last commanded relay state
 	onSince      time.Time // when the current ON streak began (zero if off)
@@ -51,21 +68,28 @@ type State struct {
 }
 
 type persisted struct {
-	Enabled      bool `json:"enabled"`
-	Threshold    int  `json:"threshold"`
-	MaxOnMinutes int  `json:"max_on_minutes"`
+	Enabled              bool `json:"enabled"`
+	Threshold            int  `json:"threshold"`
+	MaxOnMinutes         int  `json:"max_on_minutes"`
+	SunriseEnabled       bool `json:"sunrise_enabled"`
+	SunriseBeforeMinutes int  `json:"sunrise_before_minutes"`
+	SunriseAfterMinutes  int  `json:"sunrise_after_minutes"`
 }
 
 // New builds a State seeded with the given defaults (normally read from
 // config.ini), then overrides them from a previously persisted state
 // file at statePath if one exists. statePath may be empty, in which
 // case persistence is silently disabled.
-func New(statePath string, defaultEnabled bool, defaultThreshold, defaultMaxOnMinutes int) *State {
+func New(statePath string, defaultEnabled bool, defaultThreshold, defaultMaxOnMinutes int,
+	defaultSunriseEnabled bool, defaultSunriseBeforeMinutes, defaultSunriseAfterMinutes int) *State {
 	s := &State{
-		statePath:    statePath,
-		enabled:      defaultEnabled,
-		threshold:    defaultThreshold,
-		maxOnMinutes: defaultMaxOnMinutes,
+		statePath:            statePath,
+		enabled:              defaultEnabled,
+		threshold:            defaultThreshold,
+		maxOnMinutes:         defaultMaxOnMinutes,
+		sunriseEnabled:       defaultSunriseEnabled,
+		sunriseBeforeMinutes: defaultSunriseBeforeMinutes,
+		sunriseAfterMinutes:  defaultSunriseAfterMinutes,
 	}
 	s.load()
 	return s
@@ -90,6 +114,9 @@ func (s *State) load() {
 	s.enabled = p.Enabled
 	s.threshold = p.Threshold
 	s.maxOnMinutes = p.MaxOnMinutes
+	s.sunriseEnabled = p.SunriseEnabled
+	s.sunriseBeforeMinutes = p.SunriseBeforeMinutes
+	s.sunriseAfterMinutes = p.SunriseAfterMinutes
 }
 
 // save writes the current settings to disk. A failure here is logged
@@ -103,7 +130,14 @@ func (s *State) save() {
 		log.Printf("[IRLight] failed to create state dir for %s: %v", s.statePath, err)
 		return
 	}
-	data, err := json.Marshal(persisted{Enabled: s.enabled, Threshold: s.threshold, MaxOnMinutes: s.maxOnMinutes})
+	data, err := json.Marshal(persisted{
+		Enabled:              s.enabled,
+		Threshold:            s.threshold,
+		MaxOnMinutes:         s.maxOnMinutes,
+		SunriseEnabled:       s.sunriseEnabled,
+		SunriseBeforeMinutes: s.sunriseBeforeMinutes,
+		SunriseAfterMinutes:  s.sunriseAfterMinutes,
+	})
 	if err != nil {
 		return
 	}
@@ -138,6 +172,34 @@ func (s *State) Set(enabled *bool, threshold, maxOnMinutes *int) (enabledOut boo
 	s.mu.Unlock()
 	s.save()
 	return enabledOut, thresholdOut, maxOnMinutesOut
+}
+
+// GetSunrise returns the current sunrise-window settings.
+func (s *State) GetSunrise() (enabled bool, beforeMinutes, afterMinutes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sunriseEnabled, s.sunriseBeforeMinutes, s.sunriseAfterMinutes
+}
+
+// SetSunrise updates whichever of enabled/beforeMinutes/afterMinutes is
+// non-nil, leaving the others unchanged, persists the result, and
+// returns the resulting settings. Same "absent param = no change"
+// convention as Set.
+func (s *State) SetSunrise(enabled *bool, beforeMinutes, afterMinutes *int) (enabledOut bool, beforeOut, afterOut int) {
+	s.mu.Lock()
+	if enabled != nil {
+		s.sunriseEnabled = *enabled
+	}
+	if beforeMinutes != nil {
+		s.sunriseBeforeMinutes = *beforeMinutes
+	}
+	if afterMinutes != nil {
+		s.sunriseAfterMinutes = *afterMinutes
+	}
+	enabledOut, beforeOut, afterOut = s.sunriseEnabled, s.sunriseBeforeMinutes, s.sunriseAfterMinutes
+	s.mu.Unlock()
+	s.save()
+	return enabledOut, beforeOut, afterOut
 }
 
 // runtimeSnapshot returns the current relay-tracking fields for use by
@@ -192,33 +254,55 @@ func (s *State) commitToggle(on bool) {
 	s.mu.Unlock()
 }
 
-// decideRelay computes whether the relay should be on and whether the
-// dark-session cutoff should be armed, given the current lux reading,
-// threshold, on/off state, how long it's been continuously on, the
-// configured max-on-minutes cap (0 = no cap), and whether the cutoff
-// was already armed earlier this dark session. Pure and side-effect
-// free so it's cheap to unit test independently of telemetry/network
-// state, mirroring luxswitch.decideSwitch.
-func decideRelay(lux float64, threshold int, currentlyOn bool, onFor time.Duration, maxOnMinutes int, cutoffArmed bool) (wantOn, nextCutoffArmed bool) {
+// decideDarkTrigger computes whether the lux-based "dark" trigger wants
+// the relay on, and whether the dark-session cutoff should be armed or
+// disarmed, given the current lux reading, threshold, on/off state, and
+// whether the cutoff was already armed. Does NOT apply the
+// max-on-minutes cap — see applyMaxOnCap, which is applied once to the
+// combined decision from both triggers (see tick). Pure and
+// side-effect free so it's cheap to unit test independently of
+// telemetry/network state, mirroring luxswitch.decideSwitch.
+func decideDarkTrigger(lux float64, threshold int, currentlyOn, cutoffArmed bool) (wantOn, nextCutoffArmed bool) {
 	switch {
 	case lux > float64(threshold+deadband):
 		return false, false // bright: off, and re-arm for the next dark session
 	case lux < float64(threshold-deadband):
-		wantOn = !cutoffArmed
+		return !cutoffArmed, cutoffArmed
 	default:
-		wantOn = currentlyOn // within the deadband: no change
+		return currentlyOn, cutoffArmed // within the deadband: no change
 	}
-	if wantOn && maxOnMinutes > 0 && onFor >= time.Duration(maxOnMinutes)*time.Minute {
-		return false, true // hit the safety cap -- force off and arm the cutoff
-	}
-	return wantOn, cutoffArmed
 }
 
-// Run evaluates the current lux reading against the configured
-// threshold every pollInterval and switches the relay accordingly
-// (with deadband + cooldown + the max-on-minutes safety cap), until
-// ctx is cancelled.
-func Run(ctx context.Context, state *State, tel *telemetry.State, relayHost string, relayPort int) {
+// sunriseWindowActive reports whether now falls within
+// [sunrise-beforeMinutes, sunrise+afterMinutes] for the given day's
+// computed sunrise. A zero sunriseTime (e.g. polar day/night, per
+// go-sunrise's own contract) is treated as inactive. Pure given a
+// sunrise time, so the astronomical calculation itself stays outside
+// this decision logic and this stays cheaply unit-testable.
+func sunriseWindowActive(now, sunriseTime time.Time, beforeMinutes, afterMinutes int) bool {
+	if sunriseTime.IsZero() {
+		return false
+	}
+	start := sunriseTime.Add(-time.Duration(beforeMinutes) * time.Minute)
+	end := sunriseTime.Add(time.Duration(afterMinutes) * time.Minute)
+	return !now.Before(start) && now.Before(end)
+}
+
+// applyMaxOnCap enforces the hardware safety cap over the combined
+// (dark-trigger OR sunrise-trigger) decision, independent of which
+// trigger asked for the relay to be on. maxOnMinutes <= 0 means no cap.
+func applyMaxOnCap(wantOn bool, onFor time.Duration, maxOnMinutes int) (nextWantOn, cutoff bool) {
+	if wantOn && maxOnMinutes > 0 && onFor >= time.Duration(maxOnMinutes)*time.Minute {
+		return false, true
+	}
+	return wantOn, false
+}
+
+// Run evaluates both triggers every pollInterval and switches the relay
+// accordingly (with deadband + cooldown + the max-on-minutes safety
+// cap), until ctx is cancelled. lat/lon locate this Pi for the sunrise
+// trigger's computation.
+func Run(ctx context.Context, state *State, tel *telemetry.State, relayHost string, relayPort int, lat, lon float64) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
@@ -226,27 +310,52 @@ func Run(ctx context.Context, state *State, tel *telemetry.State, relayHost stri
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			tick(state, tel, relayHost, relayPort)
+			tick(state, tel, relayHost, relayPort, lat, lon)
 		}
 	}
 }
 
-func tick(state *State, tel *telemetry.State, relayHost string, relayPort int) {
+func tick(state *State, tel *telemetry.State, relayHost string, relayPort int, lat, lon float64) {
 	enabled, threshold, maxOnMinutes := state.Get()
-	if !enabled {
-		return
-	}
-	snap := tel.Snapshot()
-	if !snap.Connected {
+	sunriseEnabled, beforeMin, afterMin := state.GetSunrise()
+	if !enabled && !sunriseEnabled {
 		return
 	}
 
 	currentlyOn, onFor, cutoffArmed := state.runtimeSnapshot()
-	want, nextArmed := decideRelay(float64(snap.Lux), threshold, currentlyOn, onFor, maxOnMinutes, cutoffArmed)
+	want, nextArmed := false, cutoffArmed
+
+	if enabled {
+		if snap := tel.Snapshot(); snap.Connected {
+			want, nextArmed = decideDarkTrigger(float64(snap.Lux), threshold, currentlyOn, cutoffArmed)
+		} else {
+			// Telemetry down: the dark trigger defers to whatever the
+			// relay is already doing rather than forcing a change.
+			want = currentlyOn
+		}
+	}
+
+	if sunriseEnabled {
+		now := time.Now()
+		rise, _ := sunrise.SunriseSunset(lat, lon, now.Year(), now.Month(), now.Day())
+		if sunriseWindowActive(now, rise, beforeMin, afterMin) {
+			// The sunrise window always wins if active, regardless of
+			// the dark trigger's own cutoff-armed state -- it's a
+			// short, separately-bounded, deliberately-scheduled
+			// window, not part of that dark session's allotment.
+			want = true
+		}
+	}
+
+	if capped, cutoff := applyMaxOnCap(want, onFor, maxOnMinutes); cutoff {
+		want, nextArmed = capped, true
+	} else {
+		want = capped
+	}
+
 	if nextArmed != cutoffArmed {
 		state.setCutoffArmed(nextArmed)
 	}
-
 	if want == currentlyOn {
 		return
 	}
@@ -264,5 +373,5 @@ func tick(state *State, tel *telemetry.State, relayHost string, relayPort int) {
 	if want {
 		onOff = "on"
 	}
-	log.Printf("[IRLight] relay -> %s (lux=%.1f, threshold=%d)", onOff, snap.Lux, threshold)
+	log.Printf("[IRLight] relay -> %s (dark_enabled=%v sunrise_enabled=%v)", onOff, enabled, sunriseEnabled)
 }

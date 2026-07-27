@@ -141,6 +141,18 @@ func (r rawStore) int(key string, def int) int {
 	return n
 }
 
+func (r rawStore) float(key string, def float64) float64 {
+	v, ok := r[key]
+	if !ok || v == "" {
+		return def
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 func (r rawStore) boolean(key string, def bool) bool {
 	v, ok := r[key]
 	if !ok || v == "" {
@@ -230,6 +242,17 @@ type Config struct {
 	IRLightRelayHost    string
 	IRLightRelayPort    int
 	IRLightStateDir     string
+
+	// Sunrise trigger: forces the relay on for a window of minutes
+	// before/after computed local sunrise, independent of the lux
+	// threshold above (also live-configurable + persisted). Latitude/
+	// longitude are config.ini-only, like RelayHost/RelayPort -- a
+	// physical install constant, not something to change at runtime.
+	IRLightSunriseEnabled       bool
+	IRLightSunriseBeforeMinutes int
+	IRLightSunriseAfterMinutes  int
+	IRLightLatitude             float64
+	IRLightLongitude            float64
 
 	// [discovery]
 	DiscoveryEnabled bool
@@ -336,6 +359,12 @@ func Load(path string) (*Config, error) {
 		IRLightRelayHost:    r.str("ir_light.relay_host", "127.0.0.1"),
 		IRLightRelayPort:    r.int("ir_light.relay_port", 7778),
 		IRLightStateDir:     r.str("ir_light.state_dir", "/var/lib/picam-orchestrator"),
+
+		IRLightSunriseEnabled:       r.boolean("ir_light.sunrise_enabled", false),
+		IRLightSunriseBeforeMinutes: r.int("ir_light.sunrise_before_minutes", 30),
+		IRLightSunriseAfterMinutes:  r.int("ir_light.sunrise_after_minutes", 15),
+		IRLightLatitude:             r.float("ir_light.latitude", 0.0),
+		IRLightLongitude:            r.float("ir_light.longitude", 0.0),
 
 		DiscoveryEnabled: r.boolean("discovery.enabled", true),
 		DiscoveryName:    r.str("discovery.name", ""),
