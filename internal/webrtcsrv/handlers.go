@@ -303,17 +303,21 @@ func (s *Server) handleIRLight(w http.ResponseWriter, r *http.Request) {
 // handleIRLightTrigger implements GET /ir-light/trigger?on=<bool>, a
 // direct manual on/off command -- bypasses the dark/sunrise decision
 // logic entirely (see irlight.Trigger), but still goes through the
-// same cooldown/max-on-minutes safety cap as an automatic toggle. This
-// is an imperative action, not a settings patch, so ?on= is required
-// rather than optional.
+// same cooldown/max-on-minutes safety cap as an automatic toggle, plus
+// its own longer manual-only cooldown. This is an imperative action,
+// not a settings patch, so ?on= is required rather than optional.
 func (s *Server) handleIRLightTrigger(w http.ResponseWriter, r *http.Request) {
 	on, ok := parseBoolParam(r.URL.Query().Get("on"))
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing or invalid on"})
 		return
 	}
-	reached := irlight.Trigger(s.irLight, s.cfg.IRLightRelayHost, s.cfg.IRLightRelayPort, on)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": reached, "relay_on": on})
+	reached, retryAfter := irlight.Trigger(s.irLight, s.cfg.IRLightRelayHost, s.cfg.IRLightRelayPort, on)
+	resp := map[string]any{"ok": reached, "relay_on": on}
+	if retryAfter > 0 {
+		resp["retry_after_seconds"] = int(math.Ceil(retryAfter.Seconds()))
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleRecord implements GET /record?on=<bool>, a direct manual

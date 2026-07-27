@@ -13,6 +13,10 @@
 //     UI button) independent of either automatic trigger. If either
 //     automatic trigger is enabled, its next tick re-asserts control;
 //     if both are disabled, the relay just stays as manually set.
+//     Manual changes are also subject to their own longer cooldown
+//     (manualCooldown, 3 minutes) on top of the shared one below --
+//     purely to stop a human from rapidly re-toggling it in the UI,
+//     independent of the automatic triggers' own responsiveness.
 //
 // A configurable cap limits how many minutes the relay may stay
 // continuously on — regardless of which of the three sources put it
@@ -50,6 +54,13 @@ const (
 	deadband     = 5
 	cooldown     = 30 * time.Second
 	pollInterval = 5 * time.Second
+
+	// manualCooldown is a separate, longer cooldown specific to Trigger
+	// (the manual on/off endpoint) -- distinct from cooldown above,
+	// which also gates the automatic dark/sunrise triggers and is tuned
+	// for their lux-crossing responsiveness. This one exists purely to
+	// stop a human from rapidly flipping the manual control in the UI.
+	manualCooldown = 3 * time.Minute
 )
 
 // State holds the live-configurable enabled/threshold/maxOnMinutes and
@@ -66,10 +77,11 @@ type State struct {
 	sunriseAfterMinutes  int
 	statePath            string
 
-	relayOn      bool      // last commanded relay state
-	onSince      time.Time // when the current ON streak began (zero if off)
-	cutoffArmed  bool      // true once max-on-minutes has forced this dark session off
-	lastToggleAt time.Time // cooldown tracking
+	relayOn            bool      // last commanded relay state
+	onSince            time.Time // when the current ON streak began (zero if off)
+	cutoffArmed        bool      // true once max-on-minutes has forced this dark session off
+	lastToggleAt       time.Time // cooldown tracking, shared with the automatic triggers
+	lastManualToggleAt time.Time // manualCooldown tracking, Trigger-only
 }
 
 type persisted struct {
@@ -257,6 +269,33 @@ func (s *State) undoLastToggle() {
 	s.mu.Unlock()
 }
 
+// manualCoolingDown reports whether Trigger last successfully changed
+// the relay too recently to allow another manual change yet, and if
+// so, how much longer the caller must wait. Unlike coolingDown, this
+// is a pure read with no side effect: lastManualToggleAt is only ever
+// set by markManualToggle, after a change has actually gone through,
+// so there's nothing to undo on a blocked or failed attempt.
+func (s *State) manualCoolingDown() (blocked bool, retryAfter time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastManualToggleAt.IsZero() {
+		return false, 0
+	}
+	elapsed := time.Since(s.lastManualToggleAt)
+	if elapsed >= manualCooldown {
+		return false, 0
+	}
+	return true, manualCooldown - elapsed
+}
+
+// markManualToggle records a successfully-applied manual toggle, for
+// manualCoolingDown's cooldown tracking.
+func (s *State) markManualToggle() {
+	s.mu.Lock()
+	s.lastManualToggleAt = time.Now()
+	s.mu.Unlock()
+}
+
 // commitToggle records a successfully-applied relay state change.
 func (s *State) commitToggle(on bool) {
 	s.mu.Lock()
@@ -337,21 +376,25 @@ func Run(ctx context.Context, state *State, tel *telemetry.State, relayHost stri
 // manually-triggered state exactly as they would to an automatic one.
 // The next tick will re-assert automatic control if either trigger is
 // enabled; if both are disabled, the relay simply stays as set here.
-func Trigger(state *State, relayHost string, relayPort int, on bool) (reached bool) {
+func Trigger(state *State, relayHost string, relayPort int, on bool) (reached bool, retryAfter time.Duration) {
 	current, _, _ := state.runtimeSnapshot()
 	if on == current {
-		return true // already in the requested state, nothing to do
+		return true, 0 // already in the requested state, nothing to do
+	}
+	if blocked, wait := state.manualCoolingDown(); blocked {
+		return false, wait
 	}
 	if state.coolingDown() {
-		return false
+		return false, 0
 	}
 	reached, _ = relayrpc.SetRelay(relayHost, relayPort, on)
 	if !reached {
 		state.undoLastToggle()
-		return false
+		return false, 0
 	}
 	state.commitToggle(on)
-	return true
+	state.markManualToggle()
+	return true, 0
 }
 
 func tick(state *State, tel *telemetry.State, relayHost string, relayPort int, lat, lon float64) {

@@ -236,8 +236,9 @@ func TestTrigger(t *testing.T) {
 		s := New("", false, 50, 0, false, 30, 15) // relay starts off
 		// Deliberately empty host:port -- if this reached the network at
 		// all, relayrpc.SetRelay would fail and Trigger would return false.
-		if !Trigger(s, "", 0, false) {
-			t.Fatalf("Trigger(off) on an already-off relay should be a no-op returning true")
+		reached, retryAfter := Trigger(s, "", 0, false)
+		if !reached || retryAfter != 0 {
+			t.Fatalf("Trigger(off) on an already-off relay should be a no-op returning (true, 0), got (%v, %v)", reached, retryAfter)
 		}
 	})
 
@@ -247,7 +248,8 @@ func TestTrigger(t *testing.T) {
 		s.lastToggleAt = time.Now() // simulate a toggle that just happened
 		s.mu.Unlock()
 
-		if Trigger(s, "", 0, true) {
+		reached, _ := Trigger(s, "", 0, true)
+		if reached {
 			t.Fatalf("Trigger should be blocked by an active cooldown")
 		}
 		on, _, _ := s.runtimeSnapshot()
@@ -258,14 +260,58 @@ func TestTrigger(t *testing.T) {
 
 	t.Run("a failed relay command undoes the cooldown so it can be retried", func(t *testing.T) {
 		s := New("", false, 50, 0, false, 30, 15)
-		if Trigger(s, "127.0.0.1", 1, true) { // port 1 -- nothing listens there
+		reached, retryAfter := Trigger(s, "127.0.0.1", 1, true) // port 1 -- nothing listens there
+		if reached {
 			t.Fatalf("Trigger against an unreachable relay should report failure")
+		}
+		if retryAfter != 0 {
+			t.Fatalf("a failed (not cooldown-blocked) Trigger should report retryAfter=0, got %v", retryAfter)
 		}
 		s.mu.Lock()
 		zero := s.lastToggleAt.IsZero()
 		s.mu.Unlock()
 		if !zero {
 			t.Fatalf("a failed Trigger should undo the cooldown timestamp so the next attempt isn't blocked")
+		}
+	})
+
+	t.Run("manual cooldown blocks a second manual change too soon after the first", func(t *testing.T) {
+		s := New("", false, 50, 0, false, 30, 15)
+		s.mu.Lock()
+		s.lastManualToggleAt = time.Now() // simulate a manual change that just succeeded
+		s.mu.Unlock()
+
+		reached, retryAfter := Trigger(s, "", 0, true)
+		if reached {
+			t.Fatalf("Trigger should be blocked by the manual cooldown")
+		}
+		if retryAfter <= 0 || retryAfter > manualCooldown {
+			t.Fatalf("retryAfter = %v, want a positive duration no greater than manualCooldown (%v)", retryAfter, manualCooldown)
+		}
+		on, _, _ := s.runtimeSnapshot()
+		if on {
+			t.Fatalf("a manual-cooldown-blocked Trigger should not change the tracked relay state")
+		}
+	})
+
+	t.Run("manual cooldown does not block the very first manual change", func(t *testing.T) {
+		s := New("", false, 50, 0, false, 30, 15) // lastManualToggleAt is zero
+		reached, retryAfter := Trigger(s, "", 0, true)
+		if !reached || retryAfter != 0 {
+			t.Fatalf("first-ever manual Trigger should succeed unblocked, got (%v, %v)", reached, retryAfter)
+		}
+	})
+
+	t.Run("requesting the already-current state is exempt from the manual cooldown", func(t *testing.T) {
+		s := New("", false, 50, 0, false, 30, 15)
+		s.commitToggle(true) // relay is on
+		s.mu.Lock()
+		s.lastManualToggleAt = time.Now() // and a manual change just happened
+		s.mu.Unlock()
+
+		reached, retryAfter := Trigger(s, "", 0, true) // request the same state again
+		if !reached || retryAfter != 0 {
+			t.Fatalf("re-requesting the current state should be a no-op even during the manual cooldown, got (%v, %v)", reached, retryAfter)
 		}
 	})
 }
