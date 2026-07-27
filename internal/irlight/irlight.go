@@ -218,6 +218,16 @@ func (s *State) runtimeSnapshot() (relayOn bool, onFor time.Duration, cutoffArme
 	return s.relayOn, onFor, s.cutoffArmed
 }
 
+// RelayOn reports the last-commanded relay state, for exposing over
+// /status.json -- lets a client (e.g. the manual-trigger toggle in
+// picam-frontend's Settings page) confirm a trigger actually took
+// effect, or track a change made by either automatic trigger, without
+// needing its own copy of the decision logic.
+func (s *State) RelayOn() bool {
+	relayOn, _, _ := s.runtimeSnapshot()
+	return relayOn
+}
+
 func (s *State) setCutoffArmed(armed bool) {
 	s.mu.Lock()
 	s.cutoffArmed = armed

@@ -216,6 +216,21 @@ func TestRuntimeSnapshotAndCommitToggle(t *testing.T) {
 	}
 }
 
+func TestRelayOn(t *testing.T) {
+	s := New("", false, 50, 0, false, 30, 15)
+	if s.RelayOn() {
+		t.Fatalf("fresh state RelayOn() = true, want false")
+	}
+	s.commitToggle(true)
+	if !s.RelayOn() {
+		t.Fatalf("after commitToggle(true), RelayOn() = false, want true")
+	}
+	s.commitToggle(false)
+	if s.RelayOn() {
+		t.Fatalf("after commitToggle(false), RelayOn() = true, want false")
+	}
+}
+
 func TestTrigger(t *testing.T) {
 	t.Run("already in requested state is a no-op", func(t *testing.T) {
 		s := New("", false, 50, 0, false, 30, 15) // relay starts off

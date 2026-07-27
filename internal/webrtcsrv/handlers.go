@@ -364,6 +364,7 @@ func (s *Server) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 		"ir_light_sunrise_enabled":        irSunriseEnabled,
 		"ir_light_sunrise_before_minutes": irSunriseBefore,
 		"ir_light_sunrise_after_minutes":  irSunriseAfter,
+		"ir_light_relay_on":               s.irLight.RelayOn(),
 		"recording":                       recording,
 		"recording_manual":                recordingManual,
 		"frame_ts_us":                     snap.LatestFrameTsUs,
