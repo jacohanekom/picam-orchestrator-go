@@ -1,10 +1,11 @@
 // Command picam-orchestrator is a Go port of the C++ picam-orchestrator
 // service: it reassembles chunked UDP YUV420 frames from picam-raw,
 // ingests JSON detection events from picam-hailo, optionally delays and
-// annotates frames, encodes to VP8, and serves the result over WebRTC
-// using WHEP-style signaling — plus plain HTTP/TCP control and status
-// endpoints, and picam-recorder integration for detection-triggered
-// recording. See picam-orchestrator-go/README.md for the full picture.
+// annotates frames, JPEG-encodes them, and serves the result as MJPEG
+// (multipart/x-mixed-replace) over plain HTTP — plus plain HTTP/TCP
+// control and status endpoints, and picam-recorder integration for
+// detection-triggered recording. See picam-orchestrator-go/README.md
+// for the full picture.
 package main
 
 import (
@@ -31,10 +32,9 @@ import (
 	"picam-orchestrator/internal/recorder"
 	"picam-orchestrator/internal/snapshot"
 	"picam-orchestrator/internal/statussrv"
+	"picam-orchestrator/internal/streamsrv"
 	"picam-orchestrator/internal/telemetry"
 	"picam-orchestrator/internal/uistate"
-	"picam-orchestrator/internal/vp8"
-	"picam-orchestrator/internal/webrtcsrv"
 )
 
 func main() {
@@ -71,12 +71,13 @@ func main() {
 	loresDelayBuf := delaybuffer.New(cfg.DelayMs)
 
 	// Diagnostic: JPEG-encode the current live frame for a stream straight
-	// from its mailbox, bypassing VP8/WebRTC. curl GET /debug/frame.jpg
-	// on a headless box to check whether the frame feeding the encoder is
-	// already corrupt or whether corruption is introduced downstream.
-	debugFrameJPEG := func(stream webrtcsrv.StreamSource) ([]byte, bool) {
+	// from its mailbox as a single still image, with no client
+	// registration. curl GET /debug/frame.jpg on a headless box to check
+	// whether the frame feeding the live stream's own encode is already
+	// corrupt or whether corruption is introduced downstream.
+	debugFrameJPEG := func(stream streamsrv.StreamSource) ([]byte, bool) {
 		mb := &mainMailbox
-		if stream == webrtcsrv.StreamLores {
+		if stream == streamsrv.StreamLores {
 			mb = &loresMailbox
 		}
 		frame, ok := mb.Get()
@@ -89,9 +90,9 @@ func main() {
 		}
 		return jpg, true
 	}
-	debugFrameRaw := func(stream webrtcsrv.StreamSource) ([]byte, int, int, bool) {
+	debugFrameRaw := func(stream streamsrv.StreamSource) ([]byte, int, int, bool) {
 		mb := &mainMailbox
-		if stream == webrtcsrv.StreamLores {
+		if stream == streamsrv.StreamLores {
 			mb = &loresMailbox
 		}
 		frame, ok := mb.Get()
@@ -120,7 +121,7 @@ func main() {
 	// it. Always sourced from main's live mailbox, regardless of which
 	// resolution's detections triggered the recording or whether main
 	// annotation mode is currently on — matching the C++ original.
-	// Built (and evtRecorder constructed) ahead of webrtcsrv.New below so
+	// Built (and evtRecorder constructed) ahead of streamsrv.New below so
 	// it can be passed in for the manual GET /record trigger.
 	snapshotFn := func(evt detect.Event) []byte {
 		frame, ok := mainMailbox.Get()
@@ -138,11 +139,9 @@ func main() {
 	}
 	evtRecorder := recorder.New(cfg.RecorderHost, cfg.RecorderPort, cfg.RecorderIdleSecs, snapshotFn)
 
-	srv, err := webrtcsrv.New(webrtcsrv.Config{
+	srv, err := streamsrv.New(streamsrv.Config{
 		HTTPPort:         cfg.HTTPPort,
-		DefaultStream:    webrtcsrv.ParseStream(cfg.DefaultStream, webrtcsrv.StreamMainHigh),
-		ICEPortMin:       uint16(cfg.ICEPortMin),
-		ICEPortMax:       uint16(cfg.ICEPortMax),
+		DefaultStream:    streamsrv.ParseStream(cfg.DefaultStream, streamsrv.StreamMainHigh),
 		PicamRawHost:     cfg.TelemetryHost,
 		PicamRawCmdPort:  cfg.CommandPort,
 		MaxClients:       50,
@@ -153,7 +152,7 @@ func main() {
 		RecorderDir:      cfg.RecorderDir,
 	}, status, telState, luxState, uiState, irState, evtRecorder)
 	if err != nil {
-		log.Fatalf("[WebRTC] %v", err)
+		log.Fatalf("[HTTP] %v", err)
 	}
 	// Seeded from uiState's Snapshot (persisted value, if any, else the
 	// [osd]/[annotate] config.ini defaults uiState was constructed
@@ -190,27 +189,15 @@ func main() {
 	})
 
 	// Main streams at its native capture resolution — no downscale — as
-	// two independently-bitrated VP8 encodes of the same frame, so
+	// two independently-JPEG-quality encodes of the same frame, so
 	// picam-frontend can move a struggling browser viewer between them
-	// (see relay.viewer.adaptQuality in picam-frontend-go) without ever
-	// dropping below native resolution. Both tiers share the same
-	// cpuused speed/quality tuning since they encode identical input at
-	// identical resolution — only the target bitrate differs.
-	mainEncoderHigh, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainHighKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
-	if err != nil {
-		log.Fatalf("[VP8] main-high encoder: %v", err)
-	}
-	defer mainEncoderHigh.Close()
-	mainEncoderLow, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainLowKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
-	if err != nil {
-		log.Fatalf("[VP8] main-low encoder: %v", err)
-	}
-	defer mainEncoderLow.Close()
-	loresEncoder, err := vp8.NewEncoder(cfg.LoresWidth, cfg.LoresHeight, cfg.VP8BitrateLoresKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedLores)
-	if err != nil {
-		log.Fatalf("[VP8] lores encoder: %v", err)
-	}
-	defer loresEncoder.Close()
+	// (see internal/relay's quality-switching logic in picam-frontend-go)
+	// without ever dropping below native resolution. Unlike VP8, JPEG
+	// has no persistent encoder state (no rate-control history, no GOP,
+	// no keyframe scheduling) — each frame is just a stateless
+	// snapshot.Encode call at the tier's own quality setting, called
+	// directly from runMainLoop below rather than needing a constructed
+	// encoder object here.
 
 	var wg sync.WaitGroup
 	runBg := func(f func()) {
@@ -262,8 +249,7 @@ func main() {
 	}
 	log.Printf("[Main] Streams active. Open http://<pi-ip>:%d", cfg.HTTPPort)
 
-	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf,
-		mainEncoderHigh, mainEncoderLow, loresEncoder)
+	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf)
 
 	log.Printf("[Main] Shutting down.")
 	if discSrv != nil {
@@ -283,9 +269,8 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] detections  : %s:%d tolerance_ms=%d", cfg.DetectionsHost, cfg.DetectionsPort, cfg.ToleranceMs)
 	log.Printf("[Config] telemetry   : %s:%d command_port=%d", cfg.TelemetryHost, cfg.TelemetryPort, cfg.CommandPort)
 	log.Printf("[Config] delay       : %dms (applied to whichever resolution has annotation on)", cfg.DelayMs)
-	log.Printf("[Config] encode      : vp8 main high=%dkbps low=%dkbps lores=%dkbps jpeg_quality=%d fps live=%d annotated=%d",
-		cfg.VP8BitrateMainHighKbps, cfg.VP8BitrateMainLowKbps, cfg.VP8BitrateLoresKbps, cfg.JPEGQuality, cfg.OutputFPSLive, cfg.OutputFPSAnnotated)
-	log.Printf("[Config] webrtc      : ice_ports=%d-%d", cfg.ICEPortMin, cfg.ICEPortMax)
+	log.Printf("[Config] encode      : mjpeg main high=%d low=%d lores=%d (1-100) snapshot_jpeg_quality=%d fps live=%d annotated=%d",
+		cfg.MJPEGQualityHigh, cfg.MJPEGQualityLow, cfg.MJPEGQualityLores, cfg.JPEGQuality, cfg.OutputFPSLive, cfg.OutputFPSAnnotated)
 	log.Printf("[Config] annotate    : main=%v lores=%v", cfg.AnnotateMain, cfg.AnnotateLores)
 	log.Printf("[Config] osd         : camera_id=%v time=%v", cfg.OSDCameraID, cfg.OSDTime)
 	log.Printf("[Config] lux_switch  : enabled=%v threshold=%d state_dir=%s", cfg.LuxSwitchEnabled, cfg.LuxSwitchThreshold, cfg.LuxSwitchStateDir)
@@ -308,13 +293,12 @@ func logConfig(cfg *config.Config) {
 func runMainLoop(
 	ctx context.Context,
 	cfg *config.Config,
-	srv *webrtcsrv.Server,
+	srv *streamsrv.Server,
 	status *pipestat.Status,
 	telState *telemetry.State,
 	detBuf *detect.Buffer,
 	mainMailbox, loresMailbox *rawframe.Mailbox,
 	mainDelayBuf, loresDelayBuf *delaybuffer.DelayBuffer,
-	mainEncoderHigh, mainEncoderLow, loresEncoder *vp8.Encoder,
 ) {
 	liveIntervalUs := fpsIntervalUs(cfg.OutputFPSLive)
 	annotIntervalUs := fpsIntervalUs(cfg.OutputFPSAnnotated)
@@ -374,28 +358,26 @@ func runMainLoop(
 						srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
 				// Only encode a tier that currently has at least one
-				// client — on a Pi 5 two simultaneous native-resolution
-				// VP8 encodes is affordable, but there's still no reason
-				// to spend either one on a tier nobody's watching.
+				// client -- JPEG has no persistent encoder state, so
+				// this is just a stateless snapshot.Encode call per
+				// tier, each independent of the others.
 				encStart := time.Now()
 				if mainHighClients > 0 {
-					forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMainHigh)
-					if vp8Bytes, err := mainEncoderHigh.Encode(data, frame.TimestampUs, forceKf); err != nil {
-						log.Printf("[VP8] main-high encode error: %v", err)
-					} else if len(vp8Bytes) > 0 {
-						srv.Broadcast(webrtcsrv.StreamMainHigh, vp8Bytes, now.Sub(lastMain))
+					if jpg, err := snapshot.Encode(data, frame.Width, frame.Height, cfg.MJPEGQualityHigh); err != nil {
+						log.Printf("[MJPEG] main-high encode error: %v", err)
+					} else if len(jpg) > 0 {
+						srv.Broadcast(streamsrv.StreamMainHigh, jpg)
 					}
 				}
 				if mainLowClients > 0 {
-					forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMainLow)
-					if vp8Bytes, err := mainEncoderLow.Encode(data, frame.TimestampUs, forceKf); err != nil {
-						log.Printf("[VP8] main-low encode error: %v", err)
-					} else if len(vp8Bytes) > 0 {
-						srv.Broadcast(webrtcsrv.StreamMainLow, vp8Bytes, now.Sub(lastMain))
+					if jpg, err := snapshot.Encode(data, frame.Width, frame.Height, cfg.MJPEGQualityLow); err != nil {
+						log.Printf("[MJPEG] main-low encode error: %v", err)
+					} else if len(jpg) > 0 {
+						srv.Broadcast(streamsrv.StreamMainLow, jpg)
 					}
 				}
 				if encDur := time.Since(encStart); encDur.Microseconds() > mainInterval {
-					log.Printf("[VP8] main encode (both tiers) took %v, longer than the %v tick interval — "+
+					log.Printf("[MJPEG] main encode (both tiers) took %v, longer than the %v tick interval — "+
 						"falling behind real time", encDur, time.Duration(mainInterval)*time.Microsecond)
 				}
 				lastMain = now
@@ -433,11 +415,10 @@ func runMainLoop(
 						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
 						srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
-				forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamLores)
-				if vp8Bytes, err := loresEncoder.Encode(data, frame.TimestampUs, forceKf); err != nil {
-					log.Printf("[VP8] lores encode error: %v", err)
-				} else if len(vp8Bytes) > 0 {
-					srv.Broadcast(webrtcsrv.StreamLores, vp8Bytes, now.Sub(lastLores))
+				if jpg, err := snapshot.Encode(data, frame.Width, frame.Height, cfg.MJPEGQualityLores); err != nil {
+					log.Printf("[MJPEG] lores encode error: %v", err)
+				} else if len(jpg) > 0 {
+					srv.Broadcast(streamsrv.StreamLores, jpg)
 				}
 				lastLores = now
 				didWork = true

@@ -5,7 +5,7 @@
 // enabled/threshold persistence exactly.
 //
 // Unlike luxswitch (evaluated once every 5s), OSD/annotate are read on
-// every single encode tick via webrtcsrv.Server's own atomic.Bool
+// every single encode tick via streamsrv.Server's own atomic.Bool
 // fields — this package is never that hot-path source of truth, only a
 // write-through side channel: handlers persist here in addition to
 // storing on the atomic fields, and main.go reads a Snapshot once at

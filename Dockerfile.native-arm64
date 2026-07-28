@@ -7,11 +7,10 @@
 # to mix two architectures' packages at once, which is what actually
 # blocked picam-raw's cross-build attempt).
 #
-# For picam-orchestrator specifically, native also means the cgo build
-# against libvpx links against genuine native arm64 libvpx headers/libs —
-# no cross sysroot, no PKG_CONFIG_LIBDIR redirection, none of the
-# machinery Dockerfile.cross-arm64 (kept alongside this file) needs to
-# cross-compile from an amd64 host instead.
+# picam-orchestrator is pure Go (CGO_ENABLED=0, see debian/rules) with
+# no C library dependencies, so a cross-compile would work fine here
+# too -- native is kept mainly so go test can actually run the compiled
+# test binary (a cross build can only go vet, not go test).
 #
 # Usage (from this directory, on a genuinely arm64 Docker host):
 #   docker build --platform linux/arm64 -f Dockerfile.native-arm64 -t picam-orchestrator-builder .
@@ -35,8 +34,6 @@ FROM golang:1.26-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         debhelper \
         devscripts \
-        pkg-config \
-        libvpx-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -56,7 +53,7 @@ COPY . .
 # timestamp separately.
 #
 # debian/rules already pins GOCACHE under the build tree and sets
-# CGO_ENABLED=1; -d (on dpkg-buildpackage) skips dpkg-checkbuilddeps'
+# CGO_ENABLED=0; -d (on dpkg-buildpackage) skips dpkg-checkbuilddeps'
 # check for the golang-go *package* specifically, since we supply Go via
 # this base image instead.
 RUN set -e; \

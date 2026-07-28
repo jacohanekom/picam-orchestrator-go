@@ -27,7 +27,7 @@
 // arm/disarm state, since it's already a short, separately-bounded
 // window.
 //
-// All settings are configured live over HTTP (see webrtcsrv's
+// All settings are configured live over HTTP (see streamsrv's
 // /ir-light and /ir-light/trigger handlers) and persisted to disk so
 // they survive a service restart, exactly like internal/luxswitch.
 package irlight

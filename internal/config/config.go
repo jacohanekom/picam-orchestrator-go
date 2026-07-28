@@ -194,24 +194,16 @@ type Config struct {
 
 	// [encode]
 	// Main streams at its native capture resolution (no downscale) as
-	// two independently-bitrated VP8 encodes of the same frame — High is
+	// two independently-JPEG-quality encodes of the same frame — High is
 	// the ceiling a detail-view browser starts at, Low is what
-	// picam-frontend moves a struggling viewer to (see
-	// relay.viewer.adaptQuality in picam-frontend-go). Both encoders
-	// share VP8CPUUsedMain since they encode identical input at
-	// identical resolution.
-	VP8BitrateMainHighKbps int
-	VP8BitrateMainLowKbps  int
-	VP8BitrateLoresKbps    int
-	VP8CPUUsedMain         int
-	VP8CPUUsedLores        int
-	JPEGQuality            int
-	OutputFPSLive          int
-	OutputFPSAnnotated     int
-
-	// [webrtc]
-	ICEPortMin int
-	ICEPortMax int
+	// picam-frontend moves a struggling viewer to (see internal/relay's
+	// quality-switching logic in picam-frontend-go).
+	MJPEGQualityHigh  int
+	MJPEGQualityLow   int
+	MJPEGQualityLores int
+	JPEGQuality       int
+	OutputFPSLive     int
+	OutputFPSAnnotated int
 
 	// [annotate]
 	AnnotateLores bool
@@ -223,7 +215,7 @@ type Config struct {
 	OSDCameraLabels []string
 
 	// [lux_switch] -- startup defaults only; the live enabled/threshold
-	// values are configured over HTTP (see webrtcsrv's /lux-switch
+	// values are configured over HTTP (see streamsrv's /lux-switch
 	// handler) and persisted to LuxSwitchStateDir by internal/luxswitch,
 	// which overrides these on the next start if a persisted value
 	// exists.
@@ -232,7 +224,7 @@ type Config struct {
 	LuxSwitchStateDir  string
 
 	// [ir_light] -- startup defaults only; the live enabled/threshold/
-	// max_on_minutes values are configured over HTTP (see webrtcsrv's
+	// max_on_minutes values are configured over HTTP (see streamsrv's
 	// /ir-light handler) and persisted to IRLightStateDir by
 	// internal/irlight, which overrides these on the next start if a
 	// persisted value exists.
@@ -329,26 +321,19 @@ func Load(path string) (*Config, error) {
 
 		DelayMs: r.int("delay.delay_ms", 1000),
 
-		VP8BitrateMainHighKbps: r.int("encode.vp8_bitrate_main_high_kbps", 3000),
-		VP8BitrateMainLowKbps:  r.int("encode.vp8_bitrate_main_low_kbps", 800),
-		VP8BitrateLoresKbps:    r.int("encode.vp8_bitrate_lores_kbps", 500),
-		// VP8 realtime speed (VP8E_SET_CPUUSED): higher = faster encode,
-		// lower quality. Main (native-res, run as two simultaneous
-		// encodes — see VP8BitrateMainHighKbps/LowKbps above) defaults
-		// faster so both keep up with real time; lores has ample
-		// headroom and stays at the original 8. Valid range for VP8
-		// realtime is roughly 4-16.
-		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 12),
-		VP8CPUUsedLores: r.int("encode.vp8_cpu_used_lores", 8),
-		JPEGQuality:     r.int("encode.jpeg_quality", 80),
+		// JPEG quality (Go's image/jpeg 1-100 scale, higher = better
+		// quality/larger frames) for main's two live-stream tiers plus
+		// lores. Unlike VP8's bitrate-driven CBR, this is a direct
+		// per-frame quality target, not a rate-controlled average.
+		MJPEGQualityHigh:  r.int("encode.mjpeg_quality_high", 85),
+		MJPEGQualityLow:   r.int("encode.mjpeg_quality_low", 40),
+		MJPEGQualityLores: r.int("encode.mjpeg_quality_lores", 60),
+		JPEGQuality:       r.int("encode.jpeg_quality", 80),
 		// OutputFPSLive matches picam-raw's own capture rate: this is
 		// the zero-added-latency default view, so it's the one that
 		// should actually be real time.
 		OutputFPSLive:      r.int("encode.output_fps_live", 30),
 		OutputFPSAnnotated: r.int("encode.output_fps_annotated", 30),
-
-		ICEPortMin: r.int("webrtc.ice_port_min", 50000),
-		ICEPortMax: r.int("webrtc.ice_port_max", 50100),
 
 		AnnotateLores: r.boolean("annotate.lores", false),
 		AnnotateMain:  r.boolean("annotate.main", false),

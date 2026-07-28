@@ -1,5 +1,7 @@
-// Package snapshot JPEG-encodes YUV420 (I420) frames for EventRecorder's
-// saved snapshot files — not the live WebRTC stream (see internal/vp8).
+// Package snapshot JPEG-encodes YUV420 (I420) frames -- used both for
+// EventRecorder's saved snapshot files and, at a per-stream quality
+// setting, for the live MJPEG stream itself (see cmd/picam-orchestrator's
+// runMainLoop and internal/streamsrv).
 package snapshot
 
 import (

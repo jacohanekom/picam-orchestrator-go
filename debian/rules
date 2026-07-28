@@ -7,27 +7,19 @@
 export GOCACHE := $(CURDIR)/debian/.gocache
 export GOFLAGS := -mod=mod
 export GO111MODULE := on
-export CGO_ENABLED := 1
+# Pure Go, no cgo/C library dependencies at all (JPEG encoding uses the
+# standard library's own image/jpeg) -- unlike when this project linked
+# cgo against libvpx for VP8, cross-compiling now needs nothing beyond
+# GOOS/GOARCH, no C toolchain or PKG_CONFIG_LIBDIR dance.
+export CGO_ENABLED := 0
 
-DEB_BUILD_ARCH      := $(shell dpkg-architecture -qDEB_BUILD_ARCH)
-DEB_HOST_ARCH       := $(shell dpkg-architecture -qDEB_HOST_ARCH)
-DEB_HOST_GNU_TYPE   := $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
-DEB_HOST_MULTIARCH  := $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
-CROSS_COMPILING     := $(filter-out $(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))
+DEB_BUILD_ARCH := $(shell dpkg-architecture -qDEB_BUILD_ARCH)
+DEB_HOST_ARCH  := $(shell dpkg-architecture -qDEB_HOST_ARCH)
+CROSS_COMPILING := $(filter-out $(DEB_BUILD_ARCH),$(DEB_HOST_ARCH))
 
 ifneq ($(CROSS_COMPILING),)
-# Cross-compiling (e.g. building for arm64 on an amd64 host, invoked via
-# `dpkg-buildpackage -aarm64`): point Go/cgo at the target's cross
-# toolchain and the multiarch libvpx-dev:$(DEB_HOST_ARCH) install,
-# following Debian's standard cross-building convention
-# (https://wiki.debian.org/CrossCompiling) — PKG_CONFIG_LIBDIR redirects
-# pkg-config at the target arch's .pc files instead of the build host's
-# own, with PKG_CONFIG_PATH cleared so it can't fall back to those.
 export GOOS   := linux
 export GOARCH := $(subst aarch64,arm64,$(shell dpkg-architecture -qDEB_HOST_GNU_CPU))
-export CC     := $(DEB_HOST_GNU_TYPE)-gcc
-export PKG_CONFIG_LIBDIR := /usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig
-export PKG_CONFIG_PATH :=
 endif
 
 %:
@@ -39,7 +31,7 @@ override_dh_auto_build:
 override_dh_auto_test:
 ifeq ($(CROSS_COMPILING),)
 	go vet ./...
-	go test ./internal/vp8/... ./internal/luxswitch/... ./internal/discovery/... ./internal/uistate/... ./internal/irlight/... ./internal/recorder/...
+	go test ./internal/luxswitch/... ./internal/discovery/... ./internal/uistate/... ./internal/irlight/... ./internal/recorder/...
 else
 	# go vet only compiles (via the cross CC above), never executes the
 	# target binary, so it's safe to keep even cross-compiling. go test

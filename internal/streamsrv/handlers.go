@@ -1,4 +1,4 @@
-package webrtcsrv
+package streamsrv
 
 import (
 	"encoding/json"
@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Server) registerHandlers(mux *http.ServeMux) {
-	mux.HandleFunc("POST /webrtc/offer", s.handleOffer)
+	mux.HandleFunc("GET /stream", s.handleStream)
 	mux.HandleFunc("GET /select", s.handleSelect)
 	mux.HandleFunc("GET /osd", s.handleOSD)
 	mux.HandleFunc("GET /annotate", s.handleAnnotate)
@@ -33,9 +33,10 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 }
 
 // handleDebugFrame implements GET /debug/frame.jpg?stream=main|lores. It
-// JPEG-encodes the current live frame directly from the mailbox,
-// bypassing VP8/WebRTC, so a headless box can `curl` it to see whether
-// the frame feeding the encoder is already corrupt.
+// JPEG-encodes the current live frame directly from the mailbox as a
+// single still image, with no client registration or continuous
+// stream, so a headless box can `curl` it to see whether the frame
+// feeding the encoder is already corrupt.
 func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.DebugFrameJPEG == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "debug frame endpoint disabled"})

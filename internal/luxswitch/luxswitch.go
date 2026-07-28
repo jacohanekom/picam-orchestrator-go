@@ -1,7 +1,7 @@
 // Package luxswitch implements automatic camera-lens switching based on
 // ambient light: above a configured lux threshold picam-raw is told to
 // use camera 0, below it camera 1. The enabled flag and threshold are
-// configured live over HTTP (see webrtcsrv's /lux-switch handler) and
+// configured live over HTTP (see streamsrv's /lux-switch handler) and
 // persisted to disk so they survive a service restart, unlike this
 // process's other runtime-toggleable settings (OSD, annotate), which are
 // deliberately in-memory-only.
