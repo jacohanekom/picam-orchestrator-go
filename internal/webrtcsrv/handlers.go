@@ -360,7 +360,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEventDownload implements GET /events/download?name=X, streaming
-// the named recording's raw MP4 bytes. name must pass
+// the named recording's raw AVI bytes. name must pass
 // recorder.ValidRecordingName -- a strict allowlist (no "/", "\", or
 // "..") rather than a traversal blocklist, since every name
 // EventRecorder ever generates is already known to match it.
@@ -370,7 +370,7 @@ func (s *Server) handleEventDownload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing or invalid name"})
 		return
 	}
-	path := filepath.Join(s.cfg.RecorderDir, name+".mp4")
+	path := filepath.Join(s.cfg.RecorderDir, name+".avi")
 	f, err := os.Open(path)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
@@ -382,8 +382,8 @@ func (s *Server) handleEventDownload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.mp4"`)
-	http.ServeContent(w, r, name+".mp4", info.ModTime(), f)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.avi"`)
+	http.ServeContent(w, r, name+".avi", info.ModTime(), f)
 }
 
 func round1(v float32) float64 {

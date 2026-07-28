@@ -33,11 +33,11 @@ func ValidRecordingName(name string) bool {
 	return name != "" && nameRE.MatchString(name)
 }
 
-// ListRecordings scans dir for *.mp4 files and returns one Recording
+// ListRecordings scans dir for *.avi files and returns one Recording
 // per file, newest first. Each recording's StartTime comes from its
 // .csv sidecar's first data row (the true wall-clock start, including
 // any flushed pre-buffer frames written ahead of the trigger) when
-// that file is present and parseable, falling back to the .mp4's own
+// that file is present and parseable, falling back to the .avi's own
 // mtime otherwise (e.g. an in-progress recording, whose .csv is only
 // written on close).
 func ListRecordings(dir string) ([]Recording, error) {
@@ -47,10 +47,10 @@ func ListRecordings(dir string) ([]Recording, error) {
 	}
 	out := make([]Recording, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".mp4") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".avi") {
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), ".mp4")
+		name := strings.TrimSuffix(e.Name(), ".avi")
 		if !ValidRecordingName(name) {
 			continue
 		}

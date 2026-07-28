@@ -170,7 +170,7 @@ While a manual recording is active (`on=true`), the automatic stop paths that no
 
 ### Browsing and downloading past recordings
 
-`GET /events` lists every `<name>.mp4` picam-recorder has ever written into `[recorder].dir` (default `/var/lib/picam-recorder` — must match that project's own `dir` setting, since this reads the shared filesystem directly rather than going through picam-recorder's TCP protocol, which has no listing or file-streaming concept of its own), newest first:
+`GET /events` lists every `<name>.avi` picam-recorder has ever written into `[recorder].dir` (default `/var/lib/picam-recorder` — must match that project's own `dir` setting, since this reads the shared filesystem directly rather than going through picam-recorder's TCP protocol, which has no listing or file-streaming concept of its own), newest first:
 
 ```json
 {"recordings": [
@@ -179,7 +179,7 @@ While a manual recording is active (`on=true`), the automatic stop paths that no
 ]}
 ```
 
-`start_time` comes from the recording's `.csv` sidecar's first row when present — the true wall-clock start including any flushed pre-buffer frames, not just when the file was closed — falling back to the `.mp4`'s own mtime for a recording still in progress (no `.csv` yet) or one whose sidecar is missing/corrupt. `GET /events/download?name=X` streams that recording's raw MP4 bytes with `Content-Disposition: attachment` (and range-request support, so a partial/resumed download or in-player seeking both work); `name` is checked against a strict allowlist (only the characters EventRecorder itself ever generates a filename from) before touching the filesystem, rejecting any path-traversal attempt by construction rather than by trying to blocklist `..` specifically.
+`start_time` comes from the recording's `.csv` sidecar's first row when present — the true wall-clock start including any flushed pre-buffer frames, not just when the file was closed — falling back to the `.avi`'s own mtime for a recording still in progress (no `.csv` yet) or one whose sidecar is missing/corrupt. `GET /events/download?name=X` streams that recording's raw AVI bytes with `Content-Disposition: attachment` (and range-request support, so a partial/resumed download or in-player seeking both work); `name` is checked against a strict allowlist (only the characters EventRecorder itself ever generates a filename from) before touching the filesystem, rejecting any path-traversal attempt by construction rather than by trying to blocklist `..` specifically.
 
 ### Persisted Settings-page state
 

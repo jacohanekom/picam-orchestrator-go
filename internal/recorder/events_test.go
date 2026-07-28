@@ -44,7 +44,7 @@ func writeFile(t *testing.T, path, contents string) {
 
 func TestListRecordingsPrefersCSVTimestampOverMtime(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "clip01.mp4"), "fake mp4 bytes")
+	writeFile(t, filepath.Join(dir, "clip01.avi"), "fake avi bytes")
 	writeFile(t, filepath.Join(dir, "clip01.csv"),
 		"frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n"+
 			"1,100,0,0,2020-01-01T00:00:00Z,5\n"+
@@ -68,7 +68,7 @@ func TestListRecordingsPrefersCSVTimestampOverMtime(t *testing.T) {
 
 func TestListRecordingsFallsBackToMtimeWithoutCSV(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "clip02.mp4"), "fake mp4 bytes")
+	writeFile(t, filepath.Join(dir, "clip02.avi"), "fake avi bytes")
 
 	recs, err := ListRecordings(dir)
 	if err != nil {
@@ -82,9 +82,9 @@ func TestListRecordingsFallsBackToMtimeWithoutCSV(t *testing.T) {
 	}
 }
 
-func TestListRecordingsIgnoresNonMP4AndInvalidNames(t *testing.T) {
+func TestListRecordingsIgnoresNonAVIAndInvalidNames(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "clip03.mp4"), "fake mp4 bytes")
+	writeFile(t, filepath.Join(dir, "clip03.avi"), "fake avi bytes")
 	writeFile(t, filepath.Join(dir, "clip03.csv"), "frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n")
 	writeFile(t, filepath.Join(dir, "not-a-recording.txt"), "irrelevant")
 
@@ -99,10 +99,10 @@ func TestListRecordingsIgnoresNonMP4AndInvalidNames(t *testing.T) {
 
 func TestListRecordingsSortedNewestFirst(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "older.mp4"), "x")
+	writeFile(t, filepath.Join(dir, "older.avi"), "x")
 	writeFile(t, filepath.Join(dir, "older.csv"),
 		"frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n1,1,0,0,2020-01-01T00:00:00Z,5\n")
-	writeFile(t, filepath.Join(dir, "newer.mp4"), "x")
+	writeFile(t, filepath.Join(dir, "newer.avi"), "x")
 	writeFile(t, filepath.Join(dir, "newer.csv"),
 		"frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n1,1,0,0,2021-01-01T00:00:00Z,5\n")
 
