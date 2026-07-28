@@ -171,7 +171,7 @@ While a manual recording is active (`on=true`), the automatic stop paths that no
 
 ### Browsing and downloading past recordings
 
-`GET /events` lists every `<name>.webm` this process has ever recorded into `[recorder].dir` (default `/var/lib/picam-recorder`, kept as the historical path so any `.mp4` recordings from a prior picam-recorder-based install are still found and listed alongside new `.webm` ones), newest first:
+`GET /events` lists every `<name>.webm` this process has ever recorded into `[recorder].dir` (default `/var/lib/picam-orchestrator/recordings` — under this process's own systemd-provisioned state directory, since it has no permission to create or write into picam-recorder's old `/var/lib/picam-recorder`; `.mp4` recordings left over from a prior picam-recorder-based install are also listed if moved into this same directory), newest first:
 
 ```json
 {"recordings": [

@@ -17,7 +17,12 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 # Creates /var/lib/picam-orchestrator (owned by picam-orchestrator:picam-orchestrator,
 # mode 0750) before each start -- this is where internal/luxswitch persists
 # the live-configured lux auto-switch enabled/threshold setting so it
-# survives a restart, matching config.ini's [lux_switch] state_dir default.
+# survives a restart (matching config.ini's [lux_switch] state_dir
+# default), and, under a recordings/ subdirectory created lazily on first
+# use, where internal/recorder.Recorder writes event/manual recordings
+# (matching config.ini's [recorder] dir default) -- deliberately under
+# this StateDirectory=, not some other path, since this unprivileged user
+# has no permission to create directories elsewhere under /var/lib.
 StateDirectory=picam-orchestrator
 
 ExecStart=/usr/bin/picam-orchestrator --config /etc/picam-orchestrator/config.ini

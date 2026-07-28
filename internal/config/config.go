@@ -281,9 +281,15 @@ type Config struct {
 	// watchdog.
 	RecorderIdleSecs int
 	// RecorderDir is where this process writes its own recordings
-	// (WebM/VP8, plus JPEG snapshot and .events.json sidecars) and, for
-	// GET /events and /events/download, also where any legacy .mp4
-	// recordings from picam-recorder's era are still found and served.
+	// (WebM/VP8, plus JPEG snapshot and .events.json sidecars), served
+	// back out via GET /events and /events/download. Deliberately under
+	// this process's own state directory (systemd's StateDirectory=
+	// creates /var/lib/picam-orchestrator, owned by the unprivileged
+	// picam-orchestrator user, at install time) rather than
+	// picam-recorder's old /var/lib/picam-recorder, which this process
+	// has no permission to create or write into -- any recordings left
+	// over there from picam-recorder's era need to be moved into this
+	// directory manually to stay visible in the Events calendar.
 	RecorderDir string
 	// RecorderPreSecs/RecorderPostSecs are the pre-roll and post-roll
 	// buffer durations around a recording's trigger, matching
@@ -387,7 +393,7 @@ func Load(path string) (*Config, error) {
 		DefaultStream: r.str("output.default_stream", "main"),
 
 		RecorderIdleSecs: r.int("recorder.idle_secs", 30),
-		RecorderDir:      r.str("recorder.dir", "/var/lib/picam-recorder"),
+		RecorderDir:      r.str("recorder.dir", "/var/lib/picam-orchestrator/recordings"),
 		RecorderPreSecs:  r.float("recorder.pre_secs", 10.0),
 		RecorderPostSecs: r.float("recorder.post_secs", 10.0),
 	}
