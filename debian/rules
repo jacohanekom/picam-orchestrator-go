@@ -10,11 +10,16 @@
 export GOCACHE := $(CURDIR)/debian/.gocache
 export GOFLAGS := -mod=mod
 export GO111MODULE := on
-# Pure Go, no cgo/C library dependencies at all (JPEG encoding uses the
-# standard library's own image/jpeg) -- unlike when this project linked
-# cgo against libvpx for VP8, cross-compiling now needs nothing beyond
-# GOOS/GOARCH, no C toolchain or PKG_CONFIG_LIBDIR dance.
-export CGO_ENABLED := 0
+# cgo against libjpeg-turbo (see internal/snapshot) for JPEG encoding --
+# needed to sustain 30fps on native-resolution MJPEG tiers, which the
+# standard library's pure-Go image/jpeg couldn't. CI builds natively on
+# real arm64 hardware (see .github/workflows/build.yml), so this needs no
+# C cross-compiler there. A genuine cross-arch build (foreign
+# DEB_HOST_ARCH below) would additionally need a C cross-compiler plus
+# target-arch libturbojpeg0-dev and a PKG_CONFIG_LIBDIR pointed at its
+# multiarch .pc files (same shape as picam-raw/debian/rules' cmake cross
+# setup) -- not wired up here since nothing currently exercises that path.
+export CGO_ENABLED := 1
 
 DEB_BUILD_ARCH := $(shell dpkg-architecture -qDEB_BUILD_ARCH)
 DEB_HOST_ARCH  := $(shell dpkg-architecture -qDEB_HOST_ARCH)
@@ -34,13 +39,16 @@ override_dh_auto_build:
 override_dh_auto_test:
 ifeq ($(CROSS_COMPILING),)
 	go vet ./...
-	go test ./internal/luxswitch/... ./internal/discovery/... ./internal/uistate/... ./internal/irlight/... ./internal/recorder/...
+	go test ./internal/luxswitch/... ./internal/discovery/... ./internal/uistate/... ./internal/irlight/... ./internal/recorder/... ./internal/snapshot/...
 else
-	# go vet only compiles (via the cross CC above), never executes the
-	# target binary, so it's safe to keep even cross-compiling. go test
-	# is skipped: it needs to actually RUN the compiled test binary,
-	# which this $(DEB_BUILD_ARCH) build host can't do for a
-	# $(DEB_HOST_ARCH) binary without emulation.
+	# Cross-compiling with CGO_ENABLED=1 and no C cross-compiler
+	# configured (see the CGO_ENABLED comment above) -- go vet will
+	# still try to invoke cgo for internal/snapshot here and fail
+	# without one. This branch was only ever exercised by a foreign
+	# DEB_HOST_ARCH build, which this repo's own CI doesn't do (it
+	# builds natively on arm64 hardware); left as-is since fixing it
+	# means standing up the cross C toolchain this plan deliberately
+	# didn't wire up.
 	go vet ./...
 endif
 

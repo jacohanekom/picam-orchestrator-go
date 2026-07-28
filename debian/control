@@ -3,7 +3,9 @@ Section: video
 Priority: optional
 Maintainer: Jaco Hanekom <jhanekom@gmail.com>
 Build-Depends: debhelper-compat (= 13),
-               golang-go (>= 2:1.22~)
+               golang-go (>= 2:1.22~),
+               pkg-config,
+               libturbojpeg0-dev
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 
@@ -28,9 +30,10 @@ Description: MJPEG stream + camera control backend for picam-raw + picam-hailo (
  .
  This is a from-scratch Go reimplementation of the original C++
  picam-orchestrator, with the same wire protocols, config file, and
- HTTP/TCP endpoints — see its README for the full behavioral spec. Pure
- Go throughout (no cgo, no C library dependencies) — JPEG encoding uses
- the standard library's own image/jpeg.
+ HTTP/TCP endpoints — see its README for the full behavioral spec. JPEG
+ encoding uses libjpeg-turbo via cgo (internal/snapshot) rather than the
+ standard library's image/jpeg — needed to sustain 30fps while encoding
+ two native-resolution (2304x1296) MJPEG tiers per frame.
  .
  Install picam-frontend on one machine to get a browser UI that can
  view, switch streams/cameras, and toggle the OSD across multiple

@@ -321,7 +321,7 @@ func Load(path string) (*Config, error) {
 
 		DelayMs: r.int("delay.delay_ms", 1000),
 
-		// JPEG quality (Go's image/jpeg 1-100 scale, higher = better
+		// JPEG quality (libjpeg-turbo's 1-100 IJG scale, higher = better
 		// quality/larger frames) for main's two live-stream tiers plus
 		// lores. Unlike VP8's bitrate-driven CBR, this is a direct
 		// per-frame quality target, not a rate-controlled average.

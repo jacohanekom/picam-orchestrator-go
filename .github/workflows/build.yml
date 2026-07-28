@@ -76,7 +76,7 @@ jobs:
               set -e
               apt-get update
               apt-get install -y --no-install-recommends \
-                debhelper git
+                debhelper git gcc pkg-config libturbojpeg0-dev
               git config --global --add safe.directory "*"
               dpkg-buildpackage -us -uc -b -d
             '
