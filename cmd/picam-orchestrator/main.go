@@ -150,6 +150,7 @@ func main() {
 		DebugFrameRaw:    debugFrameRaw,
 		IRLightRelayHost: cfg.IRLightRelayHost,
 		IRLightRelayPort: cfg.IRLightRelayPort,
+		RecorderDir:      cfg.RecorderDir,
 	}, status, telState, luxState, uiState, irState, evtRecorder)
 	if err != nil {
 		log.Fatalf("[WebRTC] %v", err)

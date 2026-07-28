@@ -282,6 +282,14 @@ type Config struct {
 	// recording immediately regardless of this value; 0 disables the
 	// watchdog.
 	RecorderIdleSecs int
+	// RecorderDir is picam-recorder's own output directory (that
+	// project's own [recorder].dir) -- read directly off the shared
+	// filesystem for GET /events and /events/download rather than over
+	// picam-recorder's TCP control protocol, since that's a plain-text
+	// protocol not meant for listing/streaming file contents. Assumes
+	// picam-recorder runs locally on this same Pi, same as
+	// RecorderHost's own 127.0.0.1 default.
+	RecorderDir string
 }
 
 // Load reads and parses path, applying the same defaults the C++
@@ -379,6 +387,7 @@ func Load(path string) (*Config, error) {
 		RecorderHost:     r.str("recorder.host", "127.0.0.1"),
 		RecorderPort:     r.int("recorder.port", 8080),
 		RecorderIdleSecs: r.int("recorder.idle_secs", 30),
+		RecorderDir:      r.str("recorder.dir", "/var/lib/picam-recorder"),
 	}
 	return c, nil
 }

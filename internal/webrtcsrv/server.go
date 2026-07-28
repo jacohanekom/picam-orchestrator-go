@@ -88,6 +88,11 @@ type Config struct {
 	IRLightRelayHost string
 	IRLightRelayPort int
 
+	// RecorderDir is picam-recorder's own output directory, read
+	// directly for GET /events and /events/download -- see
+	// internal/recorder.ListRecordings.
+	RecorderDir string
+
 	// DebugFrameJPEG, if set, JPEG-encodes the current frame for the
 	// given stream straight from its live mailbox — bypassing VP8 and
 	// WebRTC entirely — for the GET /debug/frame.jpg diagnostic. Lets a

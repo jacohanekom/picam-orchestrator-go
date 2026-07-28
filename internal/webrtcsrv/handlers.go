@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"picam-orchestrator/internal/camrpc"
 	"picam-orchestrator/internal/irlight"
+	"picam-orchestrator/internal/recorder"
 )
 
 func (s *Server) registerHandlers(mux *http.ServeMux) {
@@ -21,6 +24,8 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ir-light", s.handleIRLight)
 	mux.HandleFunc("GET /ir-light/trigger", s.handleIRLightTrigger)
 	mux.HandleFunc("GET /record", s.handleRecord)
+	mux.HandleFunc("GET /events", s.handleEvents)
+	mux.HandleFunc("GET /events/download", s.handleEventDownload)
 	mux.HandleFunc("GET /status.json", s.handleStatusJSON)
 	mux.HandleFunc("GET /debug/frame.jpg", s.handleDebugFrame)
 	mux.HandleFunc("GET /debug/frame.raw", s.handleDebugFrameRaw)
@@ -338,6 +343,47 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	recording, manual := s.evtRecorder.Status()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recording": recording, "recording_manual": manual})
+}
+
+// handleEvents implements GET /events -- lists every recording found in
+// RecorderDir (see recorder.ListRecordings), newest first. Read
+// straight off the shared filesystem rather than through
+// picam-recorder's TCP protocol, which has no listing/streaming
+// concept of its own.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	recs, err := recorder.ListRecordings(s.cfg.RecorderDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"recordings": recs})
+}
+
+// handleEventDownload implements GET /events/download?name=X, streaming
+// the named recording's raw MP4 bytes. name must pass
+// recorder.ValidRecordingName -- a strict allowlist (no "/", "\", or
+// "..") rather than a traversal blocklist, since every name
+// EventRecorder ever generates is already known to match it.
+func (s *Server) handleEventDownload(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if !recorder.ValidRecordingName(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing or invalid name"})
+		return
+	}
+	path := filepath.Join(s.cfg.RecorderDir, name+".mp4")
+	f, err := os.Open(path)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recording not found"})
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.mp4"`)
+	http.ServeContent(w, r, name+".mp4", info.ModTime(), f)
 }
 
 func round1(v float32) float64 {

@@ -97,6 +97,8 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 | `/ir-light?enabled=true\|false&threshold=N&max_on_minutes=N&sunrise_enabled=true\|false&sunrise_before_minutes=N&sunrise_after_minutes=N` | Configure automatic IR-illuminator control via relay — see below |
 | `/ir-light/trigger?on=true\|false` | Directly command the IR-light relay on/off right now — see below |
 | `/record?on=true\|false` | Manually start/stop a picam-recorder recording, independent of detection activity — see below |
+| `/events` | Lists every recording found in `[recorder].dir`, newest first — see below |
+| `/events/download?name=X` | Streams a recording's raw MP4 bytes (`Content-Disposition: attachment`) — see below |
 | `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
 
 `/webrtc/offer` is meant to be called by `picam-frontend`, not a browser directly. Every response (including errors) carries `Access-Control-Allow-Origin: *`; an unmatched route returns `404 text/plain "Not found"`.
@@ -132,6 +134,10 @@ curl http://<pi-ip>:81/ir-light/trigger?on=true
 curl http://<pi-ip>:81/record?on=true
 curl http://<pi-ip>:81/record?on=false
 
+# List recordings, then download one by name (from the "name" field above)
+curl http://<pi-ip>:81/events
+curl -O -J http://<pi-ip>:81/events/download?name=<name>
+
 # Check pipeline status (plaintext key=value)
 echo status | nc <pi-ip> 8091
 ```
@@ -160,7 +166,20 @@ A second, **independent** trigger can run alongside the lux-based one: `sunrise_
 
 `internal/recorder.EventRecorder` drives `picam-recorder` from two independent sources sharing one recording session: detection activity from picam-hailo (via `detect.Run`'s callback), and a manual on-demand trigger, `GET /record?on=true|false`. Either one wanting a recording is enough to start one; if neither does, it stops.
 
-While a manual recording is active (`on=true`), the automatic stop paths that normally end a detection-triggered recording — an explicit "nothing detected" signal, and the idle-timeout watchdog (`[recorder].idle_secs`) — are suppressed, so it keeps going regardless of detection activity. `GET /record?on=false` always stops it immediately, even if detections are still active; if they are, a fresh detection-triggered recording can start again right after, same as normal. Detections that happen during a manual recording are still logged into that recording's `.events.json` sidecar exactly as they would be for an automatic one — manual mode only changes the start/stop decision, not event accumulation. A manual recording that starts with no detections active yet gets a `manual-`-prefixed filename so it's identifiable later; one that starts already amid detection activity is indistinguishable from (and can accumulate events like) an ordinary detection-triggered recording. `/record` is not a persisted setting — it's a one-off action scoped to whichever recording is in progress right now.
+While a manual recording is active (`on=true`), the automatic stop paths that normally end a detection-triggered recording — an explicit "nothing detected" signal, and the idle-timeout watchdog (`[recorder].idle_secs`) — are suppressed, so it keeps going regardless of detection activity. `GET /record?on=false` always stops it immediately, even if detections are still active; if they are, a fresh detection-triggered recording can start again right after, same as normal. Detections that happen during a manual recording are still logged into that recording's `.csv` sidecar exactly as they would be for an automatic one — manual mode only changes the start/stop decision, not event accumulation. A manual recording that starts with no detections active yet gets a `manual-`-prefixed filename so it's identifiable later; one that starts already amid detection activity is indistinguishable from (and can accumulate events like) an ordinary detection-triggered recording. `/record` is not a persisted setting — it's a one-off action scoped to whichever recording is in progress right now.
+
+### Browsing and downloading past recordings
+
+`GET /events` lists every `<name>.mp4` picam-recorder has ever written into `[recorder].dir` (default `/var/lib/picam-recorder` — must match that project's own `dir` setting, since this reads the shared filesystem directly rather than going through picam-recorder's TCP protocol, which has no listing or file-streaming concept of its own), newest first:
+
+```json
+{"recordings": [
+  {"name": "manual-3fae...", "start_time": "2026-07-28T09:36:02Z", "size_bytes": 15234221},
+  {"name": "a1b2c3...",      "start_time": "2026-07-28T08:12:47Z", "size_bytes": 8823110}
+]}
+```
+
+`start_time` comes from the recording's `.csv` sidecar's first row when present — the true wall-clock start including any flushed pre-buffer frames, not just when the file was closed — falling back to the `.mp4`'s own mtime for a recording still in progress (no `.csv` yet) or one whose sidecar is missing/corrupt. `GET /events/download?name=X` streams that recording's raw MP4 bytes with `Content-Disposition: attachment` (and range-request support, so a partial/resumed download or in-player seeking both work); `name` is checked against a strict allowlist (only the characters EventRecorder itself ever generates a filename from) before touching the filesystem, rejecting any path-traversal attempt by construction rather than by trying to blocklist `..` specifically.
 
 ### Persisted Settings-page state
 
