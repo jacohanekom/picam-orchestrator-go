@@ -30,17 +30,22 @@ ExecStart=/usr/bin/picam-orchestrator --config /etc/picam-orchestrator/config.in
 Restart=on-failure
 RestartSec=3
 
-# No CPUAffinity= restriction (removed): this process's own VP8 encode
-# load used to be light and intermittent -- at most two simultaneous
-# native-resolution encodes, and only while a viewer was actually
-# connected to each tier -- so confining it to one core was fine.
-# internal/recorder.Recorder's always-on mainEncoderRecord (see
-# cmd/picam-orchestrator/main.go) changed that: there's now at least
-# one continuous native-resolution VP8 encode every tick regardless of
-# viewers, and up to three simultaneous when a viewer also has Annotate
-# on. A single core is no longer enough ("[VP8] main encode took
-# 164ms, longer than the 33ms tick interval"); let the scheduler use
-# whatever cores are actually available instead.
+# Confined to the Pi's first two cores (systemd/kernel CPU numbers 0
+# and 1 -- "core 1 and 2" in human-friendly 1-indexed terms), leaving
+# cores 2 and 3 ("core 3 and 4") for picam-raw's capture and
+# picam-hailo's detection, both realtime work on the same box that
+# shouldn't have to compete with this process for CPU time. A single
+# core (the old CPUAffinity=2) wasn't enough on its own -- internal/
+# recorder.Recorder's always-on mainEncoderRecord (see cmd/
+# picam-orchestrator/main.go) means there's now at least one
+# continuous native-resolution VP8 encode every tick regardless of
+# viewers, and up to three simultaneous when a viewer also has
+# Annotate on ("[VP8] main encode took 164ms, longer than the 33ms
+# tick interval") -- but two dedicated cores of its own is enough,
+# without needing the other two cores this box's realtime processes
+# depend on.
+CPUAffinity=0 1
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=picam-orchestrator
