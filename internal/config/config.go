@@ -272,8 +272,6 @@ type Config struct {
 	DefaultStream string
 
 	// [recorder]
-	RecorderHost string
-	RecorderPort int
 	// RecorderIdleSecs bounds how long a recording can run without a new
 	// non-empty detection before EventRecorder force-stops it — a
 	// watchdog for when picam-hailo's stream goes quiet without ever
@@ -282,14 +280,18 @@ type Config struct {
 	// recording immediately regardless of this value; 0 disables the
 	// watchdog.
 	RecorderIdleSecs int
-	// RecorderDir is picam-recorder's own output directory (that
-	// project's own [recorder].dir) -- read directly off the shared
-	// filesystem for GET /events and /events/download rather than over
-	// picam-recorder's TCP control protocol, since that's a plain-text
-	// protocol not meant for listing/streaming file contents. Assumes
-	// picam-recorder runs locally on this same Pi, same as
-	// RecorderHost's own 127.0.0.1 default.
+	// RecorderDir is where this process writes its own recordings
+	// (WebM/VP8, plus JPEG snapshot and .events.json sidecars) and, for
+	// GET /events and /events/download, also where any legacy .mp4
+	// recordings from picam-recorder's era are still found and served.
 	RecorderDir string
+	// RecorderPreSecs/RecorderPostSecs are the pre-roll and post-roll
+	// buffer durations around a recording's trigger, matching
+	// picam-recorder's own former kDefaultPreSecs/kDefaultPostSecs
+	// defaults (10s each) so behavior doesn't silently change now that
+	// recording happens in-process (see internal/recorder.Recorder).
+	RecorderPreSecs  float64
+	RecorderPostSecs float64
 }
 
 // Load reads and parses path, applying the same defaults the C++
@@ -384,10 +386,10 @@ func Load(path string) (*Config, error) {
 		StatusPort:    r.int("output.status_port", 8091),
 		DefaultStream: r.str("output.default_stream", "main"),
 
-		RecorderHost:     r.str("recorder.host", "127.0.0.1"),
-		RecorderPort:     r.int("recorder.port", 8080),
 		RecorderIdleSecs: r.int("recorder.idle_secs", 30),
 		RecorderDir:      r.str("recorder.dir", "/var/lib/picam-recorder"),
+		RecorderPreSecs:  r.float("recorder.pre_secs", 10.0),
+		RecorderPostSecs: r.float("recorder.post_secs", 10.0),
 	}
 	return c, nil
 }

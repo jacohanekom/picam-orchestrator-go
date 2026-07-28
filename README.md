@@ -13,7 +13,7 @@ The original C++ implementation vendors [libdatachannel](https://github.com/paul
 - **Go's standard `image/jpeg`** for event snapshot files — it already encodes `image.YCbCr` directly in 4:2:0 without an RGB round-trip, which is exactly what the C++ version hand-rolled raw libjpeg calls to achieve.
 - **`encoding/json`** for the detection/telemetry wire protocols, instead of a hand-rolled brace-counting scanner.
 
-Everything else — the UDP chunk-reassembly protocol, delay buffer, detection buffer, annotation/OSD pixel drawing, camera-switch/recorder TCP control protocols, and the plain-text status protocol — is a direct behavioral port.
+Everything else — the UDP chunk-reassembly protocol, delay buffer, detection buffer, annotation/OSD pixel drawing, the camera-switch TCP control protocol, and the plain-text status protocol — is a direct behavioral port. Event recording is not a port: the original C++ implementation drove a separate `picam-recorder` process over TCP; this one records straight from its own already-running VP8 encode instead (see "Manual and automatic recording" below) — no external recorder process at all.
 
 ## Requirements
 
@@ -26,7 +26,6 @@ Everything else — the UDP chunk-reassembly protocol, delay buffer, detection b
 - `picam-raw` (UDP streams + telemetry + command server)
 - `picam-hailo` (detection TCP stream)
 - `picam-frontend` (the only WebRTC signaling/media client this process ever talks to)
-- `picam-recorder` (optional — only needed for detection-triggered recording)
 - `pi-relay-control` (optional, running locally on the same Pi — only needed for automatic IR-light relay control, see `[ir_light]`)
 
 ## Build
@@ -96,7 +95,7 @@ Same `config.ini` format and defaults as the C++ original (hand-rolled INI parse
 | `/lux-switch?enabled=true\|false&threshold=N` | Configure automatic lens switching by ambient light — see below |
 | `/ir-light?enabled=true\|false&threshold=N&max_on_minutes=N&sunrise_enabled=true\|false&sunrise_before_minutes=N&sunrise_after_minutes=N` | Configure automatic IR-illuminator control via relay — see below |
 | `/ir-light/trigger?on=true\|false` | Directly command the IR-light relay on/off right now — see below |
-| `/record?on=true\|false` | Manually start/stop a picam-recorder recording, independent of detection activity — see below |
+| `/record?on=true\|false` | Manually start/stop a recording, independent of detection activity — see below |
 | `/events` | Lists every recording found in `[recorder].dir`, newest first — see below |
 | `/events/download?name=X` | Streams a recording's raw MP4 bytes (`Content-Disposition: attachment`) — see below |
 | `/select?stream=main\|main-low\|lores` | Validates/echoes a stream name for client/UI sync (real per-client selection happens via `/webrtc/offer`'s own `?stream=` param) |
@@ -164,13 +163,15 @@ A second, **independent** trigger can run alongside the lux-based one: `sunrise_
 
 ### Manual and automatic recording
 
-`internal/recorder.EventRecorder` drives `picam-recorder` from two independent sources sharing one recording session: detection activity from picam-hailo (via `detect.Run`'s callback), and a manual on-demand trigger, `GET /record?on=true|false`. Either one wanting a recording is enough to start one; if neither does, it stops.
+`internal/recorder.EventRecorder` drives `internal/recorder.Recorder` — this process's own video recorder, not a separate process — from two independent sources sharing one recording session: detection activity from picam-hailo (via `detect.Run`'s callback), and a manual on-demand trigger, `GET /record?on=true|false`. Either one wanting a recording is enough to start one; if neither does, it stops.
 
-While a manual recording is active (`on=true`), the automatic stop paths that normally end a detection-triggered recording — an explicit "nothing detected" signal, and the idle-timeout watchdog (`[recorder].idle_secs`) — are suppressed, so it keeps going regardless of detection activity. `GET /record?on=false` always stops it immediately, even if detections are still active; if they are, a fresh detection-triggered recording can start again right after, same as normal. Detections that happen during a manual recording are still logged into that recording's `.csv` sidecar exactly as they would be for an automatic one — manual mode only changes the start/stop decision, not event accumulation. A manual recording that starts with no detections active yet gets a `manual-`-prefixed filename so it's identifiable later; one that starts already amid detection activity is indistinguishable from (and can accumulate events like) an ordinary detection-triggered recording. `/record` is not a persisted setting — it's a one-off action scoped to whichever recording is in progress right now.
+`Recorder` writes pre/post-buffered WebM (VP8) directly from picam-orchestrator's own always-running `mainEncoderRecord` (see [Architecture](#architecture)) — a third, always-on VP8 encode alongside the two viewer-facing main tiers, deliberately fed a clean (un-annotated) frame so recordings never contain the live `Annotate` detection-box overlay even if a viewer currently has it on. Its pre-buffer (`[recorder].pre_secs`, default 10s) is a rolling window of recently-encoded VP8 frames trimmed to the first available keyframe when a recording starts; its post-buffer (`[recorder].post_secs`, default 10s) keeps recording for that long after a stop before finalizing the file, all driven off the same encode-loop tick — no separate timer thread.
+
+While a manual recording is active (`on=true`), the automatic stop paths that normally end a detection-triggered recording — an explicit "nothing detected" signal, and the idle-timeout watchdog (`[recorder].idle_secs`) — are suppressed, so it keeps going regardless of detection activity. `GET /record?on=false` always stops it immediately, even if detections are still active; if they are, a fresh detection-triggered recording can start again right after, same as normal. Detections that happen during a manual recording are still logged into that recording's `.events.json` sidecar exactly as they would be for an automatic one — manual mode only changes the start/stop decision, not event accumulation. A manual recording that starts with no detections active yet gets a `manual-`-prefixed filename so it's identifiable later; one that starts already amid detection activity is indistinguishable from (and can accumulate events like) an ordinary detection-triggered recording. `/record` is not a persisted setting — it's a one-off action scoped to whichever recording is in progress right now.
 
 ### Browsing and downloading past recordings
 
-`GET /events` lists every `<name>.mp4` picam-recorder has ever written into `[recorder].dir` (default `/var/lib/picam-recorder` — must match that project's own `dir` setting, since this reads the shared filesystem directly rather than going through picam-recorder's TCP protocol, which has no listing or file-streaming concept of its own), newest first:
+`GET /events` lists every `<name>.webm` this process has ever recorded into `[recorder].dir` (default `/var/lib/picam-recorder`, kept as the historical path so any `.mp4` recordings from a prior picam-recorder-based install are still found and listed alongside new `.webm` ones), newest first:
 
 ```json
 {"recordings": [
@@ -179,7 +180,7 @@ While a manual recording is active (`on=true`), the automatic stop paths that no
 ]}
 ```
 
-`start_time` comes from the recording's `.csv` sidecar's first row when present — the true wall-clock start including any flushed pre-buffer frames, not just when the file was closed — falling back to the `.mp4`'s own mtime for a recording still in progress (no `.csv` yet) or one whose sidecar is missing/corrupt. `GET /events/download?name=X` streams that recording's raw MP4 bytes with `Content-Disposition: attachment` (and range-request support, so a partial/resumed download or in-player seeking both work); `name` is checked against a strict allowlist (only the characters EventRecorder itself ever generates a filename from) before touching the filesystem, rejecting any path-traversal attempt by construction rather than by trying to blocklist `..` specifically.
+`start_time` comes from the recording's `.events.json` sidecar's `started_us` field when present — the true wall-clock start including any flushed pre-buffer frames, not just when the file was closed — falling back to the file's own mtime for a recording still in progress (no sidecar yet) or one whose sidecar is missing/corrupt. `GET /events/download?name=X` streams that recording's raw bytes (`.webm`, or `.mp4` for a legacy recording) with `Content-Disposition: attachment` (and range-request support, so a partial/resumed download or in-player seeking both work); `name` is checked against a strict allowlist (only the characters EventRecorder itself ever generates a filename from) before touching the filesystem, rejecting any path-traversal attempt by construction rather than by trying to blocklist `..` specifically.
 
 ### Persisted Settings-page state
 
@@ -195,8 +196,7 @@ Unlike OSD/annotate (this process's own in-memory `atomic.Bool` fields, read on 
 
 ```
 picam-raw  ─────(UDP YUV420)────► picam-orchestrator ──(WebRTC/VP8: main-high, main-low, lores)──► picam-frontend ──► browsers
-picam-hailo ────(TCP JSON)──────►        │
-picam-recorder ◄──(TCP control)──────────┤
+picam-hailo ────(TCP JSON)──────►        │  └──(main-record VP8, always-on)──► internal/recorder.Recorder ──► WebM files
                                          ▼
                             POST /webrtc/offer (WHEP-style signaling)
 ```
@@ -218,7 +218,7 @@ picam-frontend maintains up to three separate upstream WebRTC connections per Pi
 | `internal/irlight` | Automatic IR-illuminator relay control by ambient light, persisted to disk |
 | `internal/uistate` | Persists OSD/annotate/lens Settings-page state to disk, restoring lens on startup |
 | `internal/discovery` | mDNS/DNS-SD advertisement so picam-frontend can find this Pi automatically |
-| `internal/recorder` | picam-recorder TCP control + detection-triggered recording orchestration |
+| `internal/recorder` | Detection-triggered/manual recording orchestration + pre/post-buffered WebM recorder |
 | `internal/annotate` | 5x7 bitmap font, Y-plane box/label drawing, OSD burn-in |
 | `internal/snapshot` | YUV420→JPEG for event snapshot files (stdlib `image/jpeg`) |
 | `internal/vp8` | cgo binding to libvpx for realtime VP8 encoding |
