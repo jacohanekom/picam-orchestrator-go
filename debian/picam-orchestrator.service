@@ -30,8 +30,17 @@ ExecStart=/usr/bin/picam-orchestrator --config /etc/picam-orchestrator/config.in
 Restart=on-failure
 RestartSec=3
 
-CPUAffinity=2
-
+# No CPUAffinity= restriction (removed): this process's own VP8 encode
+# load used to be light and intermittent -- at most two simultaneous
+# native-resolution encodes, and only while a viewer was actually
+# connected to each tier -- so confining it to one core was fine.
+# internal/recorder.Recorder's always-on mainEncoderRecord (see
+# cmd/picam-orchestrator/main.go) changed that: there's now at least
+# one continuous native-resolution VP8 encode every tick regardless of
+# viewers, and up to three simultaneous when a viewer also has Annotate
+# on. A single core is no longer enough ("[VP8] main encode took
+# 164ms, longer than the 33ms tick interval"); let the scheduler use
+# whatever cores are actually available instead.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=picam-orchestrator
