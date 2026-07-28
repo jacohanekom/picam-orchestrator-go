@@ -197,9 +197,13 @@ type Config struct {
 	// two independently-bitrated VP8 encodes of the same frame — High is
 	// the ceiling a detail-view browser starts at, Low is what
 	// picam-frontend moves a struggling viewer to (see
-	// relay.viewer.adaptQuality in picam-frontend-go). Both encoders
+	// relay.viewer.adaptQuality in picam-frontend-go) — plus a third,
+	// always-on encode feeding internal/recorder.Recorder. All three
 	// share VP8CPUUsedMain since they encode identical input at
-	// identical resolution.
+	// identical resolution; each is single-threaded within libvpx and
+	// they run sequentially in one goroutine, so this speed/quality
+	// knob (not more CPU cores) is what actually controls whether they
+	// fit in the tick budget.
 	VP8BitrateMainHighKbps int
 	VP8BitrateMainLowKbps  int
 	VP8BitrateLoresKbps    int
@@ -346,7 +350,7 @@ func Load(path string) (*Config, error) {
 		// faster so both keep up with real time; lores has ample
 		// headroom and stays at the original 8. Valid range for VP8
 		// realtime is roughly 4-16.
-		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 12),
+		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 16),
 		VP8CPUUsedLores: r.int("encode.vp8_cpu_used_lores", 8),
 		JPEGQuality:     r.int("encode.jpeg_quality", 80),
 		// OutputFPSLive matches picam-raw's own capture rate: this is
