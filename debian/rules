@@ -2,8 +2,11 @@
 
 # Keep Go's build cache inside the package build tree rather than
 # touching $HOME (which may not exist/be writable in a clean build
-# chroot), and avoid any module-proxy network access during a Debian
-# build — go.sum already pins every dependency.
+# chroot). GOFLAGS=-mod=mod lets the go command fetch/update go.mod and
+# go.sum itself as needed rather than failing closed on any mismatch --
+# this build does need module-proxy network access as a result (CI's
+# runner has it; a fully offline/air-gapped build would need to switch
+# this to -mod=readonly against a pre-populated go.sum instead).
 export GOCACHE := $(CURDIR)/debian/.gocache
 export GOFLAGS := -mod=mod
 export GO111MODULE := on
