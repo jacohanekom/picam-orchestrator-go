@@ -20,11 +20,12 @@ import (
 // nil to skip the snapshot.
 type SnapshotFunc func(detect.Event) []byte
 
-// EventRecorder starts/stops the video Recorder in response to detection
+// EventRecorder starts/stops picam-recorder in response to detection
 // activity and/or a manual on-demand trigger, and writes a JSON event
 // log alongside each recording.
 type EventRecorder struct {
-	vrec        *Recorder
+	host        string
+	port        int
 	snapshotFn  SnapshotFunc
 	idleTimeout time.Duration
 
@@ -41,19 +42,21 @@ type EventRecorder struct {
 	wake chan struct{}
 }
 
-// New creates an EventRecorder driving vrec. snapshotFn may be nil to
-// disable snapshot files. idleSecs bounds how long a recording can run
-// without a new non-empty detection before it's force-stopped — a
-// watchdog for when picam-hailo's stream goes quiet without ever
-// sending the empty-detections message that normally triggers an
-// immediate stop (a dropped connection, a hailo restart, or simply a
-// wire protocol that never emits an explicit "nothing here" heartbeat).
-// Without it, a recording — and the accumulated event log backing it —
-// can run and grow unbounded indefinitely. idleSecs <= 0 disables the
-// watchdog entirely, restoring the old immediate-stop-only behavior.
-func New(vrec *Recorder, idleSecs int, snapshotFn SnapshotFunc) *EventRecorder {
+// New creates an EventRecorder targeting picam-recorder at host:port.
+// snapshotFn may be nil to disable snapshot files. idleSecs bounds how
+// long a recording can run without a new non-empty detection before it's
+// force-stopped — a watchdog for when picam-hailo's stream goes quiet
+// without ever sending the empty-detections message that normally
+// triggers an immediate stop (a dropped connection, a hailo restart, or
+// simply a wire protocol that never emits an explicit "nothing here"
+// heartbeat). Without it, a recording — and the accumulated event log
+// backing it — can run and grow unbounded indefinitely. idleSecs <= 0
+// disables the watchdog entirely, restoring the old immediate-stop-only
+// behavior.
+func New(host string, port, idleSecs int, snapshotFn SnapshotFunc) *EventRecorder {
 	return &EventRecorder{
-		vrec:        vrec,
+		host:        host,
+		port:        port,
 		snapshotFn:  snapshotFn,
 		idleTimeout: time.Duration(idleSecs) * time.Second,
 		wake:        make(chan struct{}, 1),
@@ -170,7 +173,7 @@ func (r *EventRecorder) tick() {
 			name = "manual-" + id
 		}
 		startedUs := time.Now().UnixMicro()
-		file := r.vrec.Start(name)
+		file := Start(r.host, r.port, name)
 
 		if file != "" && r.snapshotFn != nil && len(triggerEvt.Detections) > 0 {
 			if jpg := r.snapshotFn(triggerEvt); len(jpg) > 0 {
@@ -232,7 +235,7 @@ func (r *EventRecorder) flush() {
 	r.accumulated = nil
 	r.mu.Unlock()
 
-	r.vrec.Stop()
+	Stop(r.host, r.port)
 	saveEvents(file, events, startedUs)
 }
 

@@ -3,10 +3,8 @@
 // ingests JSON detection events from picam-hailo, optionally delays and
 // annotates frames, encodes to VP8, and serves the result over WebRTC
 // using WHEP-style signaling — plus plain HTTP/TCP control and status
-// endpoints, and its own built-in pre/post-buffered event recording
-// (WebM/VP8, see internal/recorder.Recorder) for detection-triggered and
-// manual recording. See picam-orchestrator-go/README.md for the full
-// picture.
+// endpoints, and picam-recorder integration for detection-triggered
+// recording. See picam-orchestrator-go/README.md for the full picture.
 package main
 
 import (
@@ -138,12 +136,7 @@ func main() {
 		}
 		return jpg
 	}
-	// vrec captures picam-orchestrator's own VP8 encode (see
-	// mainEncoderRecord below) into pre/post-buffered WebM recordings --
-	// built ahead of evtRecorder, which drives it.
-	vrec := recorder.NewRecorder(cfg.RecorderDir, cfg.MainWidth, cfg.MainHeight, cfg.OutputFPSLive,
-		cfg.RecorderPreSecs, cfg.RecorderPostSecs)
-	evtRecorder := recorder.New(vrec, cfg.RecorderIdleSecs, snapshotFn)
+	evtRecorder := recorder.New(cfg.RecorderHost, cfg.RecorderPort, cfg.RecorderIdleSecs, snapshotFn)
 
 	srv, err := webrtcsrv.New(webrtcsrv.Config{
 		HTTPPort:         cfg.HTTPPort,
@@ -213,17 +206,6 @@ func main() {
 		log.Fatalf("[VP8] main-low encoder: %v", err)
 	}
 	defer mainEncoderLow.Close()
-	// Always encoded (unlike the two tiers above, which only run while
-	// they have a viewer) so vrec's pre-buffer is always warm and a
-	// recording can start with pre-roll footage even with nobody
-	// watching. Deliberately fed a clean, un-annotated frame (see
-	// runMainLoop) even when a viewer has Annotate on for main-high/low
-	// -- recordings never contain detection-box overlays.
-	mainEncoderRecord, err := vp8.NewEncoder(cfg.MainWidth, cfg.MainHeight, cfg.VP8BitrateMainHighKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedMain)
-	if err != nil {
-		log.Fatalf("[VP8] main-record encoder: %v", err)
-	}
-	defer mainEncoderRecord.Close()
 	loresEncoder, err := vp8.NewEncoder(cfg.LoresWidth, cfg.LoresHeight, cfg.VP8BitrateLoresKbps, cfg.OutputFPSLive, cfg.VP8CPUUsedLores)
 	if err != nil {
 		log.Fatalf("[VP8] lores encoder: %v", err)
@@ -281,7 +263,7 @@ func main() {
 	log.Printf("[Main] Streams active. Open http://<pi-ip>:%d", cfg.HTTPPort)
 
 	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf,
-		mainEncoderHigh, mainEncoderLow, mainEncoderRecord, loresEncoder, vrec)
+		mainEncoderHigh, mainEncoderLow, loresEncoder)
 
 	log.Printf("[Main] Shutting down.")
 	if discSrv != nil {
@@ -314,8 +296,7 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] discovery   : enabled=%v name=%q label=%q", cfg.DiscoveryEnabled, cfg.DiscoveryName, cfg.DiscoveryLabel)
 	log.Printf("[Config] ui_state    : state_dir=%s", cfg.UIStateDir)
 	log.Printf("[Config] output      : http_port=%d status_port=%d default_stream=%s", cfg.HTTPPort, cfg.StatusPort, cfg.DefaultStream)
-	log.Printf("[Config] recorder    : dir=%s idle_secs=%d pre_secs=%.1f post_secs=%.1f",
-		cfg.RecorderDir, cfg.RecorderIdleSecs, cfg.RecorderPreSecs, cfg.RecorderPostSecs)
+	log.Printf("[Config] recorder    : %s:%d", cfg.RecorderHost, cfg.RecorderPort)
 }
 
 // runMainLoop is a tick-for-tick port of the C++ original's main encode
@@ -333,8 +314,7 @@ func runMainLoop(
 	detBuf *detect.Buffer,
 	mainMailbox, loresMailbox *rawframe.Mailbox,
 	mainDelayBuf, loresDelayBuf *delaybuffer.DelayBuffer,
-	mainEncoderHigh, mainEncoderLow, mainEncoderRecord, loresEncoder *vp8.Encoder,
-	vrec *recorder.Recorder,
+	mainEncoderHigh, mainEncoderLow, loresEncoder *vp8.Encoder,
 ) {
 	liveIntervalUs := fpsIntervalUs(cfg.OutputFPSLive)
 	annotIntervalUs := fpsIntervalUs(cfg.OutputFPSAnnotated)
@@ -351,6 +331,7 @@ func runMainLoop(
 		var matchedThisTick uint64
 
 		total, mainHighClients, mainLowClients, loresClients := srv.ClientCounts()
+		mainClients := mainHighClients + mainLowClients
 
 		mainAnnotated := srv.MainAnnotated.Load()
 		loresAnnotated := srv.LoresAnnotated.Load()
@@ -363,11 +344,8 @@ func runMainLoop(
 		loresFrame, loresPopped := loresDelayBuf.Pop()
 
 		// — Main —
-		// Popped and (record-)encoded every tick unconditionally, even
-		// with zero viewers -- mainEncoderRecord (below) always runs so
-		// vrec's pre-buffer stays warm, regardless of who's watching.
 		mainInterval := chooseInterval(mainAnnotated, liveIntervalUs, annotIntervalUs)
-		if now.Sub(lastMain).Microseconds() >= mainInterval {
+		if mainClients > 0 && now.Sub(lastMain).Microseconds() >= mainInterval {
 			var frame rawframe.RawFrame
 			haveFrame := false
 			if mainAnnotated {
@@ -383,14 +361,7 @@ func runMainLoop(
 				// now the live view does too. The copy is still needed
 				// since annotate below mutates in place and frame.Data
 				// is shared with the mailbox/delay buffer.
-				//
-				// recData is cloned before detection boxes are drawn --
-				// recordings never contain the Annotate overlay, even if
-				// a viewer currently has it on (see mainEncoderRecord).
-				// OSD (camera label/timestamp) is drawn onto both: it's
-				// wanted in recordings, unlike detection boxes.
 				data := append([]byte(nil), frame.Data...)
-				recData := append([]byte(nil), frame.Data...)
 				if mainAnnotated {
 					if evt, ok := detBuf.FindNearest(frame.TimestampUs, toleranceUs); ok {
 						annotate.DrawDetections(data, frame.Width, frame.Height, evt.Detections)
@@ -401,15 +372,11 @@ func runMainLoop(
 					annotate.DrawOSD(data, frame.Width, frame.Height, frame.TimestampUs,
 						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
 						srv.OSDCameraID.Load(), srv.OSDTime.Load())
-					annotate.DrawOSD(recData, frame.Width, frame.Height, frame.TimestampUs,
-						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
-						srv.OSDCameraID.Load(), srv.OSDTime.Load())
 				}
-				// Only encode a viewer tier that currently has at least
-				// one client — on a Pi 5 two simultaneous native-
-				// resolution VP8 encodes is affordable, but there's
-				// still no reason to spend either one on a tier
-				// nobody's watching. mainEncoderRecord always runs.
+				// Only encode a tier that currently has at least one
+				// client — on a Pi 5 two simultaneous native-resolution
+				// VP8 encodes is affordable, but there's still no reason
+				// to spend either one on a tier nobody's watching.
 				encStart := time.Now()
 				if mainHighClients > 0 {
 					forceKf := srv.ConsumeForceKeyframe(webrtcsrv.StreamMainHigh)
@@ -427,13 +394,8 @@ func runMainLoop(
 						srv.Broadcast(webrtcsrv.StreamMainLow, vp8Bytes, now.Sub(lastMain))
 					}
 				}
-				if vp8Bytes, err := mainEncoderRecord.Encode(recData, frame.TimestampUs, false); err != nil {
-					log.Printf("[VP8] main-record encode error: %v", err)
-				} else if len(vp8Bytes) > 0 {
-					vrec.OnFrame(vp8Bytes, frame.TimestampUs)
-				}
 				if encDur := time.Since(encStart); encDur.Microseconds() > mainInterval {
-					log.Printf("[VP8] main encode took %v, longer than the %v tick interval — "+
+					log.Printf("[VP8] main encode (both tiers) took %v, longer than the %v tick interval — "+
 						"falling behind real time", encDur, time.Duration(mainInterval)*time.Microsecond)
 				}
 				lastMain = now

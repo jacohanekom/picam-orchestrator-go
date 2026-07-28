@@ -197,13 +197,9 @@ type Config struct {
 	// two independently-bitrated VP8 encodes of the same frame — High is
 	// the ceiling a detail-view browser starts at, Low is what
 	// picam-frontend moves a struggling viewer to (see
-	// relay.viewer.adaptQuality in picam-frontend-go) — plus a third,
-	// always-on encode feeding internal/recorder.Recorder. All three
+	// relay.viewer.adaptQuality in picam-frontend-go). Both encoders
 	// share VP8CPUUsedMain since they encode identical input at
-	// identical resolution; each is single-threaded within libvpx and
-	// they run sequentially in one goroutine, so this speed/quality
-	// knob (not more CPU cores) is what actually controls whether they
-	// fit in the tick budget.
+	// identical resolution.
 	VP8BitrateMainHighKbps int
 	VP8BitrateMainLowKbps  int
 	VP8BitrateLoresKbps    int
@@ -276,6 +272,8 @@ type Config struct {
 	DefaultStream string
 
 	// [recorder]
+	RecorderHost string
+	RecorderPort int
 	// RecorderIdleSecs bounds how long a recording can run without a new
 	// non-empty detection before EventRecorder force-stops it — a
 	// watchdog for when picam-hailo's stream goes quiet without ever
@@ -284,24 +282,14 @@ type Config struct {
 	// recording immediately regardless of this value; 0 disables the
 	// watchdog.
 	RecorderIdleSecs int
-	// RecorderDir is where this process writes its own recordings
-	// (WebM/VP8, plus JPEG snapshot and .events.json sidecars), served
-	// back out via GET /events and /events/download. Deliberately under
-	// this process's own state directory (systemd's StateDirectory=
-	// creates /var/lib/picam-orchestrator, owned by the unprivileged
-	// picam-orchestrator user, at install time) rather than
-	// picam-recorder's old /var/lib/picam-recorder, which this process
-	// has no permission to create or write into -- any recordings left
-	// over there from picam-recorder's era need to be moved into this
-	// directory manually to stay visible in the Events calendar.
+	// RecorderDir is picam-recorder's own output directory (that
+	// project's own [recorder].dir) -- read directly off the shared
+	// filesystem for GET /events and /events/download rather than over
+	// picam-recorder's TCP control protocol, since that's a plain-text
+	// protocol not meant for listing/streaming file contents. Assumes
+	// picam-recorder runs locally on this same Pi, same as
+	// RecorderHost's own 127.0.0.1 default.
 	RecorderDir string
-	// RecorderPreSecs/RecorderPostSecs are the pre-roll and post-roll
-	// buffer durations around a recording's trigger, matching
-	// picam-recorder's own former kDefaultPreSecs/kDefaultPostSecs
-	// defaults (10s each) so behavior doesn't silently change now that
-	// recording happens in-process (see internal/recorder.Recorder).
-	RecorderPreSecs  float64
-	RecorderPostSecs float64
 }
 
 // Load reads and parses path, applying the same defaults the C++
@@ -350,7 +338,7 @@ func Load(path string) (*Config, error) {
 		// faster so both keep up with real time; lores has ample
 		// headroom and stays at the original 8. Valid range for VP8
 		// realtime is roughly 4-16.
-		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 16),
+		VP8CPUUsedMain:  r.int("encode.vp8_cpu_used_main", 12),
 		VP8CPUUsedLores: r.int("encode.vp8_cpu_used_lores", 8),
 		JPEGQuality:     r.int("encode.jpeg_quality", 80),
 		// OutputFPSLive matches picam-raw's own capture rate: this is
@@ -396,10 +384,10 @@ func Load(path string) (*Config, error) {
 		StatusPort:    r.int("output.status_port", 8091),
 		DefaultStream: r.str("output.default_stream", "main"),
 
+		RecorderHost:     r.str("recorder.host", "127.0.0.1"),
+		RecorderPort:     r.int("recorder.port", 8080),
 		RecorderIdleSecs: r.int("recorder.idle_secs", 30),
-		RecorderDir:      r.str("recorder.dir", "/var/lib/picam-orchestrator/recordings"),
-		RecorderPreSecs:  r.float("recorder.pre_secs", 10.0),
-		RecorderPostSecs: r.float("recorder.post_secs", 10.0),
+		RecorderDir:      r.str("recorder.dir", "/var/lib/picam-recorder"),
 	}
 	return c, nil
 }

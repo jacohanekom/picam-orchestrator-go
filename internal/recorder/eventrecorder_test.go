@@ -7,13 +7,12 @@ import (
 	"picam-orchestrator/internal/detect"
 )
 
-// newTestRecorder returns an EventRecorder backed by a real (but never
-// actually exercised by these tests) video Recorder -- every test here
-// pokes EventRecorder's own bookkeeping fields directly rather than
-// going through vrec.Start(), so its dir/resolution are never touched.
+// newTestRecorder returns an EventRecorder pointed at a host:port that
+// reliably refuses connections fast (127.0.0.1:1 -- nothing listens
+// there) rather than hanging, so any tick()/flush() that attempts a
+// real picam-recorder command fails quickly instead of blocking.
 func newTestRecorder(idleSecs int) *EventRecorder {
-	vrec := NewRecorder("/tmp/picam-orchestrator-test", 64, 64, 10, 1, 1)
-	return New(vrec, idleSecs, nil)
+	return New("127.0.0.1", 1, idleSecs, nil)
 }
 
 func TestStartManualSetsManualActive(t *testing.T) {

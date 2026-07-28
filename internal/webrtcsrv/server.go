@@ -88,9 +88,9 @@ type Config struct {
 	IRLightRelayHost string
 	IRLightRelayPort int
 
-	// RecorderDir is where this process's own video Recorder writes
-	// recordings, read directly for GET /events and /events/download --
-	// see internal/recorder.ListRecordings.
+	// RecorderDir is picam-recorder's own output directory, read
+	// directly for GET /events and /events/download -- see
+	// internal/recorder.ListRecordings.
 	RecorderDir string
 
 	// DebugFrameJPEG, if set, JPEG-encodes the current frame for the

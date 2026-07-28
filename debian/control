@@ -25,10 +25,9 @@ Description: WebRTC (VP8) stream + camera control backend for picam-raw + picam-
  Lores are live feeds straight from picam-raw; either can be switched
  into a delayed+annotated mode that matches detections from
  picam-hailo by timestamp and draws bounding boxes onto the delayed
- frames. Also records to disk on detection activity or manual trigger
- -- pre/post-buffered WebM (VP8), built on the same encode already
- running for live viewing, with a JSON event-log file alongside each
- recording. Event snapshot files saved to disk are plain JPEG.
+ frames. Also drives picam-recorder on detection activity and writes
+ JSON event-log files alongside recordings. Event snapshot files saved
+ to disk are plain JPEG.
  .
  This is a from-scratch Go reimplementation of the original C++
  picam-orchestrator, with the same wire protocols, config file, and

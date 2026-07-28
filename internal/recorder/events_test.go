@@ -1,7 +1,6 @@
 package recorder
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,20 +42,13 @@ func writeFile(t *testing.T, path, contents string) {
 	}
 }
 
-func writeEventsJSON(t *testing.T, dir, name string, startedUs int64) {
-	t.Helper()
-	data, err := json.Marshal(eventsFile{Recording: name + ".webm", StartedUs: startedUs})
-	if err != nil {
-		t.Fatalf("marshal eventsFile: %v", err)
-	}
-	writeFile(t, filepath.Join(dir, name+".events.json"), string(data))
-}
-
-func TestListRecordingsPrefersEventsJSONTimestampOverMtime(t *testing.T) {
+func TestListRecordingsPrefersCSVTimestampOverMtime(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "clip01.webm"), "fake webm bytes")
-	want, _ := time.Parse(time.RFC3339, "2020-01-01T00:00:00Z")
-	writeEventsJSON(t, dir, "clip01", want.UnixMicro())
+	writeFile(t, filepath.Join(dir, "clip01.mp4"), "fake mp4 bytes")
+	writeFile(t, filepath.Join(dir, "clip01.csv"),
+		"frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n"+
+			"1,100,0,0,2020-01-01T00:00:00Z,5\n"+
+			"2,101,33000,2970,2020-01-01T00:00:00.033Z,1\n")
 
 	recs, err := ListRecordings(dir)
 	if err != nil {
@@ -65,17 +57,18 @@ func TestListRecordingsPrefersEventsJSONTimestampOverMtime(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("len(recs) = %d, want 1", len(recs))
 	}
+	want, _ := time.Parse(time.RFC3339, "2020-01-01T00:00:00Z")
 	if !recs[0].StartTime.Equal(want) {
-		t.Fatalf("StartTime = %v, want %v (the .events.json's started_us, not the file's mtime)", recs[0].StartTime, want)
+		t.Fatalf("StartTime = %v, want %v (the CSV's first row, not the file's mtime)", recs[0].StartTime, want)
 	}
 	if recs[0].Name != "clip01" {
 		t.Fatalf("Name = %q, want clip01", recs[0].Name)
 	}
 }
 
-func TestListRecordingsFallsBackToMtimeWithoutEventsJSON(t *testing.T) {
+func TestListRecordingsFallsBackToMtimeWithoutCSV(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "clip02.webm"), "fake webm bytes")
+	writeFile(t, filepath.Join(dir, "clip02.mp4"), "fake mp4 bytes")
 
 	recs, err := ListRecordings(dir)
 	if err != nil {
@@ -89,47 +82,29 @@ func TestListRecordingsFallsBackToMtimeWithoutEventsJSON(t *testing.T) {
 	}
 }
 
-func TestListRecordingsListsLegacyMP4AlongsideWebm(t *testing.T) {
+func TestListRecordingsIgnoresNonMP4AndInvalidNames(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "clip03.webm"), "fake webm bytes")
-	writeFile(t, filepath.Join(dir, "legacy01.mp4"), "fake mp4 bytes")
-
-	recs, err := ListRecordings(dir)
-	if err != nil {
-		t.Fatalf("ListRecordings: %v", err)
-	}
-	names := map[string]bool{}
-	for _, r := range recs {
-		names[r.Name] = true
-	}
-	if len(recs) != 2 || !names["clip03"] || !names["legacy01"] {
-		t.Fatalf("recs = %+v, want exactly clip03 and legacy01", recs)
-	}
-}
-
-func TestListRecordingsIgnoresNonRecordingAndInvalidNames(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "clip04.webm"), "fake webm bytes")
-	writeEventsJSON(t, dir, "clip04", time.Now().UnixMicro())
+	writeFile(t, filepath.Join(dir, "clip03.mp4"), "fake mp4 bytes")
+	writeFile(t, filepath.Join(dir, "clip03.csv"), "frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n")
 	writeFile(t, filepath.Join(dir, "not-a-recording.txt"), "irrelevant")
 
 	recs, err := ListRecordings(dir)
 	if err != nil {
 		t.Fatalf("ListRecordings: %v", err)
 	}
-	if len(recs) != 1 || recs[0].Name != "clip04" {
-		t.Fatalf("recs = %+v, want exactly one recording named clip04", recs)
+	if len(recs) != 1 || recs[0].Name != "clip03" {
+		t.Fatalf("recs = %+v, want exactly one recording named clip03", recs)
 	}
 }
 
 func TestListRecordingsSortedNewestFirst(t *testing.T) {
 	dir := t.TempDir()
-	older, _ := time.Parse(time.RFC3339, "2020-01-01T00:00:00Z")
-	newer, _ := time.Parse(time.RFC3339, "2021-01-01T00:00:00Z")
-	writeFile(t, filepath.Join(dir, "older.webm"), "x")
-	writeEventsJSON(t, dir, "older", older.UnixMicro())
-	writeFile(t, filepath.Join(dir, "newer.webm"), "x")
-	writeEventsJSON(t, dir, "newer", newer.UnixMicro())
+	writeFile(t, filepath.Join(dir, "older.mp4"), "x")
+	writeFile(t, filepath.Join(dir, "older.csv"),
+		"frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n1,1,0,0,2020-01-01T00:00:00Z,5\n")
+	writeFile(t, filepath.Join(dir, "newer.mp4"), "x")
+	writeFile(t, filepath.Join(dir, "newer.csv"),
+		"frame,frame_seq,ts_us,rtp_time,wall_time,nal_type\n1,1,0,0,2021-01-01T00:00:00Z,5\n")
 
 	recs, err := ListRecordings(dir)
 	if err != nil {

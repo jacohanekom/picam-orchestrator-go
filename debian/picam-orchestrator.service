@@ -17,12 +17,7 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 # Creates /var/lib/picam-orchestrator (owned by picam-orchestrator:picam-orchestrator,
 # mode 0750) before each start -- this is where internal/luxswitch persists
 # the live-configured lux auto-switch enabled/threshold setting so it
-# survives a restart (matching config.ini's [lux_switch] state_dir
-# default), and, under a recordings/ subdirectory created lazily on first
-# use, where internal/recorder.Recorder writes event/manual recordings
-# (matching config.ini's [recorder] dir default) -- deliberately under
-# this StateDirectory=, not some other path, since this unprivileged user
-# has no permission to create directories elsewhere under /var/lib.
+# survives a restart, matching config.ini's [lux_switch] state_dir default.
 StateDirectory=picam-orchestrator
 
 ExecStart=/usr/bin/picam-orchestrator --config /etc/picam-orchestrator/config.ini
@@ -30,21 +25,7 @@ ExecStart=/usr/bin/picam-orchestrator --config /etc/picam-orchestrator/config.in
 Restart=on-failure
 RestartSec=3
 
-# Confined to the Pi's first two cores (systemd/kernel CPU numbers 0
-# and 1 -- "core 1 and 2" in human-friendly 1-indexed terms), leaving
-# cores 2 and 3 ("core 3 and 4") for picam-raw's capture and
-# picam-hailo's detection, both realtime work on the same box that
-# shouldn't have to compete with this process for CPU time. A single
-# core (the old CPUAffinity=2) wasn't enough on its own -- internal/
-# recorder.Recorder's always-on mainEncoderRecord (see cmd/
-# picam-orchestrator/main.go) means there's now at least one
-# continuous native-resolution VP8 encode every tick regardless of
-# viewers, and up to three simultaneous when a viewer also has
-# Annotate on ("[VP8] main encode took 164ms, longer than the 33ms
-# tick interval") -- but two dedicated cores of its own is enough,
-# without needing the other two cores this box's realtime processes
-# depend on.
-CPUAffinity=0 1
+CPUAffinity=2
 
 StandardOutput=journal
 StandardError=journal

@@ -5,29 +5,6 @@ if ! id picam-orchestrator >/dev/null 2>&1; then
     useradd -r -s /usr/sbin/nologin picam-orchestrator || true
 fi
 
-# Older installs' config.ini shipped [recorder].dir pointing at
-# picam-recorder's own directory -- a separate, now-discontinued
-# process's directory this unprivileged user was never granted access
-# to, so recording silently failed ("mkdir /var/lib/picam-recorder:
-# permission denied") until manually reconfigured. /etc/picam-orchestrator/
-# config.ini is a conffile, so shipping a new default in the packaged
-# config.ini doesn't retroactively change an already-installed one --
-# migrate that one specific stale value forward automatically instead.
-# Only touches the line if it still has exactly that old default; a
-# deliberately customized dir is left alone.
-CONF=/etc/picam-orchestrator/config.ini
-if [ -f "$CONF" ] && grep -qE '^[[:space:]]*dir[[:space:]]*=[[:space:]]*/var/lib/picam-recorder([[:space:]]|$|;)' "$CONF"; then
-    sed -i -E 's#^([[:space:]]*dir[[:space:]]*=[[:space:]]*)/var/lib/picam-recorder([[:space:]]|$|;.*)#\1/var/lib/picam-orchestrator/recordings\2#' "$CONF"
-    echo "picam-orchestrator: migrated [recorder].dir in $CONF -- was picam-recorder's old directory, now /var/lib/picam-orchestrator/recordings"
-fi
-
-# Recordings live under this process's own state directory (systemd's
-# StateDirectory= only provisions this at service *start*, not at
-# package install, so it's created here too for correctness right
-# after install/upgrade, before the service has necessarily run yet).
-mkdir -p /var/lib/picam-orchestrator/recordings
-chown -R picam-orchestrator:picam-orchestrator /var/lib/picam-orchestrator
-
 systemctl daemon-reload || true
 
 echo ""

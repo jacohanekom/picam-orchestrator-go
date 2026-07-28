@@ -1,7 +1,7 @@
 package recorder
 
 import (
-	"encoding/json"
+	"encoding/csv"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,8 +11,7 @@ import (
 )
 
 // Recording describes one completed (or in-progress) recording found on
-// disk in RecorderDir: a .webm file written by this process's own
-// Recorder, or a legacy .mp4 left over from picam-recorder's era.
+// disk in picam-recorder's output directory.
 type Recording struct {
 	Name      string    `json:"name"`       // filename stem, e.g. a UUID or "manual-<uuid>" -- see EventRecorder
 	StartTime time.Time `json:"start_time"` // best-effort recording start; see ListRecordings
@@ -34,17 +33,13 @@ func ValidRecordingName(name string) bool {
 	return name != "" && nameRE.MatchString(name)
 }
 
-// RecordingExts are tried in order by both ListRecordings and the
-// download handler: .webm for everything this process records itself,
-// .mp4 for anything left over from picam-recorder's era.
-var RecordingExts = []string{".webm", ".mp4"}
-
-// ListRecordings scans dir for *.webm and *.mp4 files and returns one
-// Recording per file, newest first. Each recording's StartTime comes
-// from its <name>.events.json sidecar's started_us field (written by
-// EventRecorder for every recording, automatic or manual) when present
-// and parseable, falling back to the file's own mtime otherwise (e.g.
-// an in-progress recording, whose sidecar is only written on stop).
+// ListRecordings scans dir for *.mp4 files and returns one Recording
+// per file, newest first. Each recording's StartTime comes from its
+// .csv sidecar's first data row (the true wall-clock start, including
+// any flushed pre-buffer frames written ahead of the trigger) when
+// that file is present and parseable, falling back to the .mp4's own
+// mtime otherwise (e.g. an in-progress recording, whose .csv is only
+// written on close).
 func ListRecordings(dir string) ([]Recording, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -52,17 +47,11 @@ func ListRecordings(dir string) ([]Recording, error) {
 	}
 	out := make([]Recording, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".mp4") {
 			continue
 		}
-		var name string
-		for _, ext := range RecordingExts {
-			if strings.HasSuffix(e.Name(), ext) {
-				name = strings.TrimSuffix(e.Name(), ext)
-				break
-			}
-		}
-		if name == "" || !ValidRecordingName(name) {
+		name := strings.TrimSuffix(e.Name(), ".mp4")
+		if !ValidRecordingName(name) {
 			continue
 		}
 		info, err := e.Info()
@@ -70,7 +59,7 @@ func ListRecordings(dir string) ([]Recording, error) {
 			continue
 		}
 		start := info.ModTime()
-		if t, ok := eventsJSONStartTime(filepath.Join(dir, name+".events.json")); ok {
+		if t, ok := firstCSVTimestamp(filepath.Join(dir, name+".csv")); ok {
 			start = t
 		}
 		out = append(out, Recording{
@@ -83,17 +72,27 @@ func ListRecordings(dir string) ([]Recording, error) {
 	return out, nil
 }
 
-// eventsJSONStartTime reads a recording's .events.json sidecar (see
-// eventrecorder.go's saveEvents) and returns its started_us field as a
-// time.Time.
-func eventsJSONStartTime(path string) (time.Time, bool) {
-	data, err := os.ReadFile(path)
+// firstCSVTimestamp reads just the first data row of a picam-recorder
+// .csv sidecar (frame,frame_seq,ts_us,rtp_time,wall_time,nal_type) and
+// parses its wall_time (RFC3339) column.
+func firstCSVTimestamp(path string) (time.Time, bool) {
+	f, err := os.Open(path)
 	if err != nil {
 		return time.Time{}, false
 	}
-	var ef eventsFile
-	if err := json.Unmarshal(data, &ef); err != nil || ef.StartedUs == 0 {
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	if _, err := r.Read(); err != nil { // header row
 		return time.Time{}, false
 	}
-	return time.UnixMicro(ef.StartedUs), true
+	row, err := r.Read()
+	if err != nil || len(row) < 5 {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, row[4])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
