@@ -30,6 +30,7 @@ import (
 	"picam-orchestrator/internal/pipestat"
 	"picam-orchestrator/internal/rawframe"
 	"picam-orchestrator/internal/recorder"
+	"picam-orchestrator/internal/recorderstream"
 	"picam-orchestrator/internal/snapshot"
 	"picam-orchestrator/internal/statussrv"
 	"picam-orchestrator/internal/streamsrv"
@@ -69,6 +70,14 @@ func main() {
 	var mainMailbox, loresMailbox rawframe.Mailbox
 	mainDelayBuf := delaybuffer.New(cfg.DelayMs)
 	loresDelayBuf := delaybuffer.New(cfg.DelayMs)
+
+	// Latest already-JPEG-encoded main-high/main-low frame relayed from
+	// picam-recorder's own GET /stream (see internal/recorderstream) --
+	// runMainLoop broadcasts straight from these instead of self-
+	// encoding whenever main is live (not annotated) and OSD is off; see
+	// that function's own comment for why the other cases still self-
+	// encode.
+	var recorderMainHighJPEG, recorderMainLowJPEG jpegMailbox
 
 	// Diagnostic: JPEG-encode the current live frame for a stream straight
 	// from its mailbox as a single still image, with no client
@@ -236,6 +245,17 @@ func main() {
 		uistate.ReconcileActiveCamera(ctx, uiState, telState, cfg.TelemetryHost, cfg.CommandPort, 30*time.Second)
 	})
 	runBg(func() { evtRecorder.Run(ctx) })
+	// Always connected, independent of client count or annotation/OSD
+	// mode -- picam-recorder always publishes (see that project's
+	// StreamServer), so this just keeps the latest frame of each tier
+	// on hand for runMainLoop to broadcast whenever it's not
+	// self-encoding main itself.
+	runBg(func() {
+		recorderstream.Run(ctx, cfg.RecorderHost, cfg.RecorderStreamPort, "main-high", recorderMainHighJPEG.Set)
+	})
+	runBg(func() {
+		recorderstream.Run(ctx, cfg.RecorderHost, cfg.RecorderStreamPort, "main-low", recorderMainLowJPEG.Set)
+	})
 
 	srv.Start()
 
@@ -249,7 +269,8 @@ func main() {
 	}
 	log.Printf("[Main] Streams active. Open http://<pi-ip>:%d", cfg.HTTPPort)
 
-	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf)
+	runMainLoop(ctx, cfg, srv, status, telState, detBuf, &mainMailbox, &loresMailbox, mainDelayBuf, loresDelayBuf,
+		&recorderMainHighJPEG, &recorderMainLowJPEG)
 
 	log.Printf("[Main] Shutting down.")
 	if discSrv != nil {
@@ -281,7 +302,7 @@ func logConfig(cfg *config.Config) {
 	log.Printf("[Config] discovery   : enabled=%v name=%q label=%q", cfg.DiscoveryEnabled, cfg.DiscoveryName, cfg.DiscoveryLabel)
 	log.Printf("[Config] ui_state    : state_dir=%s", cfg.UIStateDir)
 	log.Printf("[Config] output      : http_port=%d status_port=%d default_stream=%s", cfg.HTTPPort, cfg.StatusPort, cfg.DefaultStream)
-	log.Printf("[Config] recorder    : %s:%d", cfg.RecorderHost, cfg.RecorderPort)
+	log.Printf("[Config] recorder    : %s:%d control, :%d stream", cfg.RecorderHost, cfg.RecorderPort, cfg.RecorderStreamPort)
 }
 
 // runMainLoop is a tick-for-tick port of the C++ original's main encode
@@ -290,6 +311,15 @@ func logConfig(cfg *config.Config) {
 // increments by at most 1 per tick even if both resolutions encoded,
 // and lores's frame timestamp wins as "newest" if both streams encode
 // in the same tick (lores is evaluated second).
+//
+// Main only self-encodes when it has to draw something into the pixels
+// that only this process can (detection boxes in annotated mode, or the
+// OSD overlay) -- otherwise it proxies picam-recorder's own always-live
+// JPEG compression straight through via recorderMainHigh/Low (see
+// internal/recorderstream and main()'s two relay goroutines) instead of
+// re-compressing the exact same frames itself. Lores is unaffected --
+// picam-recorder never touches it -- and always self-encodes exactly as
+// before.
 func runMainLoop(
 	ctx context.Context,
 	cfg *config.Config,
@@ -299,6 +329,7 @@ func runMainLoop(
 	detBuf *detect.Buffer,
 	mainMailbox, loresMailbox *rawframe.Mailbox,
 	mainDelayBuf, loresDelayBuf *delaybuffer.DelayBuffer,
+	recorderMainHigh, recorderMainLow *jpegMailbox,
 ) {
 	liveIntervalUs := fpsIntervalUs(cfg.OutputFPSLive)
 	annotIntervalUs := fpsIntervalUs(cfg.OutputFPSAnnotated)
@@ -329,60 +360,87 @@ func runMainLoop(
 
 		// — Main —
 		mainInterval := chooseInterval(mainAnnotated, liveIntervalUs, annotIntervalUs)
+		mainSelfEncode := mainAnnotated || srv.OSDCameraID.Load() || srv.OSDTime.Load()
 		if mainClients > 0 && now.Sub(lastMain).Microseconds() >= mainInterval {
-			var frame rawframe.RawFrame
-			haveFrame := false
-			if mainAnnotated {
-				if mainPopped {
-					frame, haveFrame = mainFrame, true
+			if mainSelfEncode {
+				var frame rawframe.RawFrame
+				haveFrame := false
+				if mainAnnotated {
+					if mainPopped {
+						frame, haveFrame = mainFrame, true
+					}
+				} else {
+					frame, haveFrame = mainMailbox.Get()
+				}
+				if haveFrame && len(frame.Data) > 0 {
+					// Native resolution, no downscale — recording/snapshots
+					// already ran at full native resolution unconditionally;
+					// now the live view does too. The copy is still needed
+					// since annotate below mutates in place and frame.Data
+					// is shared with the mailbox/delay buffer.
+					data := append([]byte(nil), frame.Data...)
+					if mainAnnotated {
+						if evt, ok := detBuf.FindNearest(frame.TimestampUs, toleranceUs); ok {
+							annotate.DrawDetections(data, frame.Width, frame.Height, evt.Detections)
+							matchedThisTick++
+						}
+					}
+					if srv.OSDCameraID.Load() || srv.OSDTime.Load() {
+						annotate.DrawOSD(data, frame.Width, frame.Height, frame.TimestampUs,
+							cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
+							srv.OSDCameraID.Load(), srv.OSDTime.Load())
+					}
+					// Only encode a tier that currently has at least one
+					// client -- JPEG has no persistent encoder state, so
+					// this is just a stateless snapshot.Encode call per
+					// tier, each independent of the others.
+					encStart := time.Now()
+					if mainHighClients > 0 {
+						if jpg, err := snapshot.Encode(data, frame.Width, frame.Height, cfg.MJPEGQualityHigh); err != nil {
+							log.Printf("[MJPEG] main-high encode error: %v", err)
+						} else if len(jpg) > 0 {
+							srv.Broadcast(streamsrv.StreamMainHigh, jpg)
+						}
+					}
+					if mainLowClients > 0 {
+						if jpg, err := snapshot.Encode(data, frame.Width, frame.Height, cfg.MJPEGQualityLow); err != nil {
+							log.Printf("[MJPEG] main-low encode error: %v", err)
+						} else if len(jpg) > 0 {
+							srv.Broadcast(streamsrv.StreamMainLow, jpg)
+						}
+					}
+					if encDur := time.Since(encStart); encDur.Microseconds() > mainInterval {
+						log.Printf("[MJPEG] main encode (both tiers) took %v, longer than the %v tick interval — "+
+							"falling behind real time", encDur, time.Duration(mainInterval)*time.Microsecond)
+					}
+					lastMain = now
+					didWork = true
+					newestTsUs = frame.TimestampUs
 				}
 			} else {
-				frame, haveFrame = mainMailbox.Get()
-			}
-			if haveFrame && len(frame.Data) > 0 {
-				// Native resolution, no downscale — recording/snapshots
-				// already ran at full native resolution unconditionally;
-				// now the live view does too. The copy is still needed
-				// since annotate below mutates in place and frame.Data
-				// is shared with the mailbox/delay buffer.
-				data := append([]byte(nil), frame.Data...)
-				if mainAnnotated {
-					if evt, ok := detBuf.FindNearest(frame.TimestampUs, toleranceUs); ok {
-						annotate.DrawDetections(data, frame.Width, frame.Height, evt.Detections)
-						matchedThisTick++
-					}
-				}
-				if srv.OSDCameraID.Load() || srv.OSDTime.Load() {
-					annotate.DrawOSD(data, frame.Width, frame.Height, frame.TimestampUs,
-						cfg.CameraLabel(int(frame.CameraIndex)), telState.UtcOffsetMinutes(),
-						srv.OSDCameraID.Load(), srv.OSDTime.Load())
-				}
-				// Only encode a tier that currently has at least one
-				// client -- JPEG has no persistent encoder state, so
-				// this is just a stateless snapshot.Encode call per
-				// tier, each independent of the others.
-				encStart := time.Now()
+				// Plain live, OSD off: proxy picam-recorder's own
+				// already-compressed frames straight through, no encode
+				// at all. No timestamp travels with a relayed JPEG, so
+				// newestTsUs isn't updated here -- lores keeps it fresh
+				// most ticks regardless (see this function's own "lores
+				// wins" note above).
+				broadcast := false
 				if mainHighClients > 0 {
-					if jpg, err := snapshot.Encode(data, frame.Width, frame.Height, cfg.MJPEGQualityHigh); err != nil {
-						log.Printf("[MJPEG] main-high encode error: %v", err)
-					} else if len(jpg) > 0 {
+					if jpg, ok := recorderMainHigh.Get(); ok {
 						srv.Broadcast(streamsrv.StreamMainHigh, jpg)
+						broadcast = true
 					}
 				}
 				if mainLowClients > 0 {
-					if jpg, err := snapshot.Encode(data, frame.Width, frame.Height, cfg.MJPEGQualityLow); err != nil {
-						log.Printf("[MJPEG] main-low encode error: %v", err)
-					} else if len(jpg) > 0 {
+					if jpg, ok := recorderMainLow.Get(); ok {
 						srv.Broadcast(streamsrv.StreamMainLow, jpg)
+						broadcast = true
 					}
 				}
-				if encDur := time.Since(encStart); encDur.Microseconds() > mainInterval {
-					log.Printf("[MJPEG] main encode (both tiers) took %v, longer than the %v tick interval — "+
-						"falling behind real time", encDur, time.Duration(mainInterval)*time.Microsecond)
+				if broadcast {
+					lastMain = now
+					didWork = true
 				}
-				lastMain = now
-				didWork = true
-				newestTsUs = frame.TimestampUs
 			}
 		} else if mainPopped {
 			didWork = true

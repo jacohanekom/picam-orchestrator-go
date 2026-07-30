@@ -193,14 +193,17 @@ Unlike OSD/annotate (this process's own in-memory `atomic.Bool` fields, read on 
 ## Architecture
 
 ```
-picam-raw  ─────(UDP YUV420)────► picam-orchestrator ──(MJPEG/HTTP: main-high, main-low, lores)──► picam-frontend ──► browsers
-picam-hailo ────(TCP JSON)──────►        │
-picam-recorder ◄──(TCP control)──────────┤
-                                         ▼
-                              GET /stream (multipart/x-mixed-replace)
+                          picam-recorder ──(GET /stream: main-high, main-low)──┐
+                                ▲                                              ▼
+picam-raw ──(UDP YUV420)────────┤                                    picam-orchestrator ──(GET /stream: main-high, main-low, lores)──► picam-frontend ──► browsers
+picam-hailo ───(TCP JSON)──────►┘                                              ▲
+                                                                    (annotated / OSD-on-live main,
+                                                                     and lores: self-encoded here)
 ```
 
-picam-frontend maintains up to three separate upstream MJPEG connections per Pi (`main-high`, `main-low`, `lores`), lazily establishing only the ones a currently-connected browser actually needs, and moves each browser viewer between `main-high`/`main-low` based on that viewer's own downstream connection quality — see picam-frontend-go's README for that side of the adaptation.
+picam-recorder and picam-orchestrator both receive picam-raw's raw `main` YUV420 stream directly (picam-orchestrator still needs it for annotated main mode, OSD-on-live-main, and event snapshots — see below), but only picam-recorder JPEG-compresses it for the *plain live* main view: it always publishes `main-high`/`main-low` over its own `GET /stream` (independent of whether it's currently recording — see that project's README), and picam-orchestrator proxies those bytes straight through to its own `GET /stream` clients rather than re-compressing the same frames itself. picam-orchestrator only falls back to self-encoding main when it has to draw something into the pixels that only it can — annotated mode (detection boxes) or the OSD overlay on the live view — via `internal/recorderstream` (the proxy client) and `internal/snapshot` (the self-encoder, used for lores unconditionally and main in those two cases). See `runMainLoop`'s own doc comment in `cmd/picam-orchestrator/main.go` for the exact branch.
+
+picam-frontend maintains up to three separate upstream MJPEG connections per Pi (`main-high`, `main-low`, `lores`), lazily establishing only the ones a currently-connected browser actually needs, and moves each browser viewer between `main-high`/`main-low` based on that viewer's own downstream connection quality — see picam-frontend-go's README for that side of the adaptation. None of this is visible to picam-frontend at all — picam-orchestrator's own `GET /stream` contract is identical whether a given tier is self-encoded or proxied underneath.
 
 ### Package layout
 
@@ -218,8 +221,9 @@ picam-frontend maintains up to three separate upstream MJPEG connections per Pi 
 | `internal/uistate` | Persists OSD/annotate/lens Settings-page state to disk, restoring lens on startup |
 | `internal/discovery` | mDNS/DNS-SD advertisement so picam-frontend can find this Pi automatically |
 | `internal/recorder` | picam-recorder TCP control + detection-triggered recording orchestration |
+| `internal/recorderstream` | Client for picam-recorder's own always-live `GET /stream` — proxies main-high/main-low instead of self-encoding them |
 | `internal/annotate` | 5x7 bitmap font, Y-plane box/label drawing, OSD burn-in |
-| `internal/snapshot` | YUV420→JPEG (stdlib `image/jpeg`) — used for both event snapshot files and every live MJPEG frame |
+| `internal/snapshot` | YUV420→JPEG (libjpeg-turbo via cgo) — used for event snapshot files, lores (always), and main only when annotated or OSD is on |
 | `internal/pipestat` | Shared pipeline counters read by both status endpoints |
 | `internal/streamsrv` | `GET /stream` MJPEG multipart serving, client management, control endpoints, `/status.json` |
 | `internal/statussrv` | Plain-text TCP status protocol |
@@ -227,7 +231,7 @@ picam-frontend maintains up to three separate upstream MJPEG connections per Pi 
 
 ### Threading model
 
-Each network-facing component (`rawframe.Receiver`, `detect.Run`, `telemetry.Run`, `recorder.EventRecorder`) runs on its own goroutine(s), all cancelled via a single `context.Context` cancelled on SIGINT/SIGTERM (`signal.NotifyContext`). JPEG encoding has no persistent state to carry between frames (no rate-control history, no GOP, no keyframe scheduling), so each tier's `snapshot.Encode` call is a plain stateless function call made directly from the single main-loop goroutine; a main tier is only encoded on ticks where it currently has at least one client. The streaming client list (`streamsrv.Server.clients`) is a copy-on-write `atomic.Pointer[[]*Client]`: the hot per-tick broadcast path does a single atomic load and never takes a lock, while register/prune (rare) rebuild and atomically publish a fresh slice. Each client has its own small buffered channel; its own `GET /stream` request goroutine (spawned by `net/http` per-connection) reads that channel and writes each JPEG part directly to the response, so one slow/stalled client can't block the encoder or any other client. A `Client`'s stream is fixed at connect time and never adapted server-side — see the top of the README for why.
+Each network-facing component (`rawframe.Receiver`, `detect.Run`, `telemetry.Run`, `recorder.EventRecorder`) runs on its own goroutine(s), all cancelled via a single `context.Context` cancelled on SIGINT/SIGTERM (`signal.NotifyContext`). JPEG encoding has no persistent state to carry between frames (no rate-control history, no GOP, no keyframe scheduling), so each tier's `snapshot.Encode` call is a plain stateless function call made directly from the single main-loop goroutine; a main tier is only encoded on ticks where it currently has at least one client, and only in the annotated/OSD-on-live cases — otherwise the main-loop goroutine reads main-high/main-low's latest bytes straight out of a `jpegMailbox` (single-slot, "latest wins", same shape as `rawframe.Mailbox`) instead of encoding anything, kept warm by two long-lived `internal/recorderstream.Run` goroutines that never stop regardless of client count (picam-recorder always publishes, so there's no lazy-connect state to manage). The streaming client list (`streamsrv.Server.clients`) is a copy-on-write `atomic.Pointer[[]*Client]`: the hot per-tick broadcast path does a single atomic load and never takes a lock, while register/prune (rare) rebuild and atomically publish a fresh slice. Each client has its own small buffered channel; its own `GET /stream` request goroutine (spawned by `net/http` per-connection) reads that channel and writes each JPEG part directly to the response, so one slow/stalled client can't block the encoder or any other client. A `Client`'s stream is fixed at connect time and never adapted server-side — see the top of the README for why.
 
 ### Known, intentionally-preserved quirks
 
@@ -261,4 +265,4 @@ systemctl status  picam-orchestrator
 journalctl -u picam-orchestrator -f
 ```
 
-The unit runs as an unprivileged user with `CAP_NET_BIND_SERVICE` (for port 81), pinned to CPU core 2, and restarts automatically after 3 seconds on failure.
+The unit runs as an unprivileged user with `CAP_NET_BIND_SERVICE` (for port 81) and restarts automatically after 3 seconds on failure. Unlike picam-recorder (still pinned to a single reserved core for its own JPEG compression work), this process is no longer pinned to a specific CPU core — proxying picam-recorder's own live main-quality output (see [Architecture](#architecture)) instead of separately re-compressing the same frames means its typical load no longer justifies a dedicated core.

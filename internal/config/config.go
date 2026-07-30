@@ -266,6 +266,13 @@ type Config struct {
 	// [recorder]
 	RecorderHost string
 	RecorderPort int
+	// RecorderStreamPort is picam-recorder's own always-live GET /stream
+	// port (that project's own [recorder].stream_port -- must match).
+	// internal/recorderstream connects here to proxy picam-recorder's
+	// own main-quality JPEG compression for the live (non-annotated,
+	// no-OSD) main view instead of this process separately re-
+	// compressing the exact same frames itself -- see runMainLoop.
+	RecorderStreamPort int
 	// RecorderIdleSecs bounds how long a recording can run without a new
 	// non-empty detection before EventRecorder force-stops it — a
 	// watchdog for when picam-hailo's stream goes quiet without ever
@@ -369,10 +376,11 @@ func Load(path string) (*Config, error) {
 		StatusPort:    r.int("output.status_port", 8091),
 		DefaultStream: r.str("output.default_stream", "main"),
 
-		RecorderHost:     r.str("recorder.host", "127.0.0.1"),
-		RecorderPort:     r.int("recorder.port", 8080),
-		RecorderIdleSecs: r.int("recorder.idle_secs", 30),
-		RecorderDir:      r.str("recorder.dir", "/var/lib/picam-recorder"),
+		RecorderHost:       r.str("recorder.host", "127.0.0.1"),
+		RecorderPort:       r.int("recorder.port", 8080),
+		RecorderStreamPort: r.int("recorder.stream_port", 8081),
+		RecorderIdleSecs:   r.int("recorder.idle_secs", 30),
+		RecorderDir:        r.str("recorder.dir", "/var/lib/picam-recorder"),
 	}
 	return c, nil
 }
