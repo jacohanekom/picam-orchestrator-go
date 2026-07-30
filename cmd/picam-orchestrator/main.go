@@ -197,16 +197,20 @@ func main() {
 		loresDelayBuf.Push(f)
 	})
 
-	// Main streams at its native capture resolution — no downscale — as
-	// two independently-JPEG-quality encodes of the same frame, so
-	// picam-frontend can move a struggling browser viewer between them
-	// (see internal/relay's quality-switching logic in picam-frontend-go)
-	// without ever dropping below native resolution. Unlike VP8, JPEG
-	// has no persistent encoder state (no rate-control history, no GOP,
-	// no keyframe scheduling) — each frame is just a stateless
-	// snapshot.Encode call at the tier's own quality setting, called
-	// directly from runMainLoop below rather than needing a constructed
-	// encoder object here.
+	// When this process self-encodes main itself (annotated mode, or OSD
+	// burned into the live view — see runMainLoop's own doc comment),
+	// it's two independently-JPEG-quality encodes of the same native-
+	// resolution frame, so picam-frontend can move a struggling browser
+	// viewer between them (see internal/relay's quality-switching logic
+	// in picam-frontend-go). In the common case (plain live, OSD off)
+	// main is instead proxied straight through from picam-recorder's own
+	// always-live compression, which downscales main-low for its own
+	// sustained-throughput reasons — see that project's README. Unlike
+	// VP8, JPEG has no persistent encoder state (no rate-control
+	// history, no GOP, no keyframe scheduling) — each self-encoded frame
+	// is just a stateless snapshot.Encode call at the tier's own quality
+	// setting, called directly from runMainLoop below rather than
+	// needing a constructed encoder object here.
 
 	var wg sync.WaitGroup
 	runBg := func(f func()) {

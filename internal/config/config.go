@@ -193,11 +193,14 @@ type Config struct {
 	DelayMs int
 
 	// [encode]
-	// Main streams at its native capture resolution (no downscale) as
-	// two independently-JPEG-quality encodes of the same frame — High is
-	// the ceiling a detail-view browser starts at, Low is what
-	// picam-frontend moves a struggling viewer to (see internal/relay's
-	// quality-switching logic in picam-frontend-go).
+	// Only used when this process self-encodes main itself (annotated
+	// mode, or OSD burned into the live view) — always at native capture
+	// resolution, no downscale. In the common case main is instead
+	// proxied from picam-recorder's own always-live compression (see
+	// cmd/picam-orchestrator's runMainLoop), which downscales its own
+	// low tier. High is the ceiling a detail-view browser starts at, Low
+	// is what picam-frontend moves a struggling viewer to (see
+	// internal/relay's quality-switching logic in picam-frontend-go).
 	MJPEGQualityHigh  int
 	MJPEGQualityLow   int
 	MJPEGQualityLores int
